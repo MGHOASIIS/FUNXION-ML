@@ -1,0 +1,6 @@
+data/
+# add __pycache__ after the directory is updated!
+Vishwani Dev/Task2/__pycache__/
+Vishwani Dev/Task2/data_processing/__pycache__/
+Vishwani Dev/Task2/event_based/__pycache__/
+pickled_datasets/
