@@ -4,8 +4,17 @@ data/
 # add __pycache__ after the directory is updated!
 Vishwani Dev/Task2/__pycache__/
 Vishwani Dev/Task2/event_based/__pycache__/
+Vishwani Dev/Task2/event_based/time_series_features/__pycache__/
 Vishwani Dev/Task2/plots/__pycache__/
+Vishwani Dev/Task2/scripts/__pycache__/
 pickled_datasets/
 logger.log
 .env
 .xdash
+Vishwani Dev/ALLTASKS/__pycache__/
+Vishwani Dev/ALLTASKS/event_based/__pycache__/
+Vishwani Dev/ALLTASKS/event_based/time_series_features/__pycache__/
+*.xlsx
+*.csv
+environment.yml
+experiment_errors.log
