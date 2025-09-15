@@ -1,6 +1,7 @@
 Materials/
 Figures/
 data/
+old_data/
 pickled_datasets/
 logger.log
 .env

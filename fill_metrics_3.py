@@ -3,7 +3,7 @@ import re
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
-df_res = pd.read_csv("task3-rawts.csv")
+df_res = pd.read_csv("task2.csv")
 
 paradigm_map = {
     1: "1. Injury (n=40) vs No Injury (n=20)",
@@ -13,11 +13,11 @@ paradigm_map = {
 }
 
 model_map = {
-    1: "LR (LOO)",
-    2: "RF (LOO)",
-    3: "HMM (LOO)",
-    4: "CNN (LOO)",
-    5: "RNN (LOO)"
+    1: "LR (LOO) - trunc",
+    2: "RF (LOO) - trunc",
+    3: "HMM (LOO) - trunc",
+    4: "CNN (LOO) - trunc",
+    5: "RNN (LOO) - trunc"
 }
 
 df_res["ParadigmLabel"] = df_res["Paradigm"].map(paradigm_map)
