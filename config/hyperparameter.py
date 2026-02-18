@@ -32,26 +32,6 @@ CNN_PARAM_GRID = {
 }
 
 
-# RNN_PARAM_GRID = {
-#     # architecture
-#     "rnn_type":      ["lstm", "gru"],    # 2×
-#     "hidden_size":   [64, 128],          # 2×
-#     "num_layers":    [1, 2],             # 2×
-
-#     # regularisation
-#     "bidirectional": [True, False],             # keep fixed (➜ doubles params)
-#     "dropout_rnn":   [0.2],              # after each RNN layer
-#     "dropout_fc":    [0.3],              # before final FC
-
-#     # optimisation
-#     "lr":            [1e-3],             # Adam learning-rate
-#     "epochs":        [30],               # training epochs
-#     "batch_size":    [32, 64],               # mini-batch size
-
-#     # sequence pooling
-#     "pooling":       ["max", "mean"],   # 2× last
-# }
-
 RNN_PARAM_GRID = {
     # architecture
     "rnn_type":      ["lstm", "gru"],    # 2×
@@ -59,14 +39,14 @@ RNN_PARAM_GRID = {
     "num_layers":    [1, 2],             # 2×
 
     # regularisation
-    "bidirectional": [False, True],             # keep fixed (➜ doubles params)
+    "bidirectional": [True, False],             # keep fixed (➜ doubles params)
     "dropout_rnn":   [0.2],              # after each RNN layer
     "dropout_fc":    [0.3],              # before final FC
 
     # optimisation
     "lr":            [1e-3],             # Adam learning-rate
-    "epochs":        [30, 60],               # training epochs
-    "batch_size":    [32],               # mini-batch size
+    "epochs":        [30],               # training epochs
+    "batch_size":    [32, 64],               # mini-batch size
 
     # sequence pooling
     "pooling":       ["max", "mean", "last"],   # 2× last

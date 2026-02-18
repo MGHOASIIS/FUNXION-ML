@@ -6,11 +6,10 @@ from pathlib import Path
 # Base directories
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-MATERIALS_DIR = PROJECT_ROOT / "Materials"
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
 
 # Data files
-PATIENT_DETAILS = MATERIALS_DIR / "xdash_px_details.xlsx"
+PATIENT_DETAILS = DATA_DIR / "xdash_px_details.xlsx"
 
 def get_pickled_dataset_path(task: int, data_type: str) -> Path:
     """Get path to pickled dataset."""
