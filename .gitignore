@@ -1,5 +1,5 @@
 Materials/
-data/
+# data/
 old_data/
 *.xlsx
 *.csv
