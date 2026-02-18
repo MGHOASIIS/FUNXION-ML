@@ -80,9 +80,35 @@ class ComprehensiveModelMonitor:
     
     def count_parameters(self, model) -> int:
         temp_model = model._create_temp_model()
+        if temp_model is None or not isinstance(temp_model, nn.Module):
+            return 0
         n_params = sum(p.numel() for p in temp_model.parameters())
         del temp_model
         return n_params
+
+    @staticmethod
+    def _get_pytorch_model(model) -> Optional[nn.Module]:
+        """
+        Safely extract a PyTorch nn.Module from a model wrapper.
+
+        Returns None for non-PyTorch models (e.g. HMM) so all
+        PyTorch-specific sections (gradient, activation, weight, saliency)
+        can gate themselves with a single check instead of crashing on .to().
+
+        Parameters
+        ----------
+        model : BaseModel subclass
+            Any wrapper with a _create_temp_model() method.
+
+        Returns
+        -------
+        nn.Module or None
+            Model moved to DEVICE, or None if not a PyTorch model.
+        """
+        temp = model._create_temp_model()
+        if temp is None or not isinstance(temp, nn.Module):
+            return None
+        return temp.to(DEVICE)
     
     
     def run_complete_analysis(
@@ -208,83 +234,61 @@ class ComprehensiveModelMonitor:
         print("SECTION 4: GRADIENT ANALYSIS")
         print(f"{'='*70}\n")
         
-       
         # Extract or recreate PyTorch model
-        pytorch_model = model._create_temp_model()
-        pytorch_model = pytorch_model.to(DEVICE)
-        
+        pytorch_model = self._get_pytorch_model(model)
+
         if pytorch_model is None:
             print("⚠️  Gradient Analysis SKIPPED")
-            print("   Could not extract or recreate PyTorch model from wrapper")
-            print(f"   Model type: {type(model)}")
+            print("   Model is not a PyTorch nn.Module (e.g. HMM — no gradients)")
+            print(f"   Model type: {type(model).__name__}")
             all_results['gradients'] = {'error': 'no_pytorch_model'}
-            return
-        
-        # Create appropriate dataloader
-        try:
-            from torch.utils.data import DataLoader, TensorDataset
-            
-            # Use subset of data for analysis
-            n_samples = min(10, len(X))
-            X_torch = torch.tensor(X[:n_samples], dtype=torch.float32)
-            
-            # For RNN, we need (batch, seq_len, features) format
-            if len(X_torch.shape) == 2:  # (samples, features)
-                # Assume each sample is a flattened sequence
-                seq_len = X_torch.shape[1] // 18  # Assuming 18 features per timestep
-                if seq_len > 1:
-                    X_torch = X_torch.view(n_samples, seq_len, 18)
-                else:
-                    # Single timestep, add sequence dimension
-                    X_torch = X_torch.unsqueeze(1)  # (batch, 1, features)
-            
-            # Create dummy labels (we just need them for gradient computation)
-            y_torch = torch.randint(0, 2, (n_samples,), dtype=torch.long)
+        else:
+            try:
+                from torch.utils.data import DataLoader, TensorDataset
 
-            X_torch = X_torch.to(DEVICE)
-            y_torch = y_torch.to(DEVICE)
-            
-            dataloader = DataLoader(TensorDataset(X_torch, y_torch), batch_size=n_samples)
-            
-            print(f"✓ Created dataloader with {n_samples} samples")
-            print(f"  Input shape: {X_torch.shape}")
-            
-        except Exception as e:
-            print(f"⚠️  Failed to create dataloader: {e}")
-            all_results['gradients'] = {'error': 'dataloader_creation_failed'}
-            return
-        
-        # Run gradient analysis with error handling
-        try:
-            grad_diagnostics = GradientDiagnostics()
-            gradient_stats = grad_diagnostics.analyze_gradients(
-                model=pytorch_model,  # Use extracted PyTorch model
-                dataloader=dataloader,
-                criterion=torch.nn.CrossEntropyLoss(),
-                device=DEVICE
-            )
-            
-            if gradient_stats:
-                print("✓ Gradient analysis completed successfully")
-                
-                # Plot gradient flow
-                try:
-                    grad_diagnostics.plot_gradient_flow(
-                        gradient_stats,
-                        save_path=self.figures_dir / "gradient_flow.png"
-                    )
-                    print(f"✓ Gradient flow plot saved")
-                except Exception as e:
-                    print(f"⚠️  Failed to plot gradient flow: {e}")
-                
-                all_results['gradients'] = gradient_stats
-            else:
-                print("⚠️  Gradient analysis returned empty results")
-                all_results['gradients'] = {'error': 'empty_results'}
-                
-        except Exception as e:
-            print(f"⚠️  Gradient analysis failed: {e}")
-            all_results['gradients'] = {'error': str(e)}
+                n_samples = min(10, len(X))
+                X_torch = torch.tensor(X[:n_samples], dtype=torch.float32)
+
+                if len(X_torch.shape) == 2:
+                    seq_len = X_torch.shape[1] // 18
+                    if seq_len > 1:
+                        X_torch = X_torch.view(n_samples, seq_len, 18)
+                    else:
+                        X_torch = X_torch.unsqueeze(1)
+
+                y_torch = torch.randint(0, 2, (n_samples,), dtype=torch.long)
+                X_torch = X_torch.to(DEVICE)
+                y_torch = y_torch.to(DEVICE)
+
+                dataloader = DataLoader(TensorDataset(X_torch, y_torch), batch_size=n_samples)
+                print(f"✓ Created dataloader with {n_samples} samples, shape: {X_torch.shape}")
+
+                grad_diagnostics = GradientDiagnostics()
+                gradient_stats = grad_diagnostics.analyze_gradients(
+                    model=pytorch_model,
+                    dataloader=dataloader,
+                    criterion=torch.nn.CrossEntropyLoss(),
+                    device=DEVICE
+                )
+
+                if gradient_stats:
+                    print("✓ Gradient analysis completed successfully")
+                    try:
+                        grad_diagnostics.plot_gradient_flow(
+                            gradient_stats,
+                            save_path=self.figures_dir / "gradient_flow.png"
+                        )
+                        print("✓ Gradient flow plot saved")
+                    except Exception as e:
+                        print(f"⚠️  Failed to plot gradient flow: {e}")
+                    all_results['gradients'] = gradient_stats
+                else:
+                    print("⚠️  Gradient analysis returned empty results")
+                    all_results['gradients'] = {'error': 'empty_results'}
+
+            except Exception as e:
+                print(f"⚠️  Gradient analysis failed: {e}")
+                all_results['gradients'] = {'error': str(e)}
 
             
         # ================================================================
@@ -295,77 +299,58 @@ class ComprehensiveModelMonitor:
         print(f"{'='*70}\n")
         
         # Extract or recreate PyTorch model
-        pytorch_model = model._create_temp_model()
-        pytorch_model = pytorch_model.to(DEVICE)
+        pytorch_model = self._get_pytorch_model(model)
 
-        
         if pytorch_model is None:
             print("⚠️  Activation Analysis SKIPPED")
-            print("   Could not extract or recreate PyTorch model from wrapper")
+            print("   Model is not a PyTorch nn.Module (e.g. HMM — no activations)")
             all_results['activations'] = {'error': 'no_pytorch_model'}
-            return
-        
-        # Prepare input data
-        try:
-            n_samples = min(10, len(X))
-            X_torch = torch.tensor(X[:n_samples], dtype=torch.float32)
-            
-            # Ensure correct shape for RNN
-            if len(X_torch.shape) == 2:
-                seq_len = X_torch.shape[1] // 18
-                if seq_len > 1:
-                    X_torch = X_torch.view(n_samples, seq_len, 18)
-                else:
-                    X_torch = X_torch.unsqueeze(1)
+        else:
+            try:
+                n_samples = min(10, len(X))
+                X_torch = torch.tensor(X[:n_samples], dtype=torch.float32)
 
-            X_torch = X_torch.to(DEVICE)
-            
-            print(f"✓ Prepared input tensor with shape: {X_torch.shape}")
-            
-        except Exception as e:
-            print(f"⚠️  Failed to prepare input data: {e}")
-            all_results['activations'] = {'error': 'input_preparation_failed'}
-            return
-        
-        # Extract activations with error handling
-        try:
-            act_analyzer = ActivationAnalyzer()
-            activations = act_analyzer.extract_activations(
-                model=pytorch_model,  # Use extracted PyTorch model
-                X=X_torch,
-                device=DEVICE
-            )
-            
-            if activations:
-                print(f"✓ Extracted activations from {len(activations)} layers")
-                
-                # Analyze activations
-                try:
-                    act_stats = act_analyzer.analyze_activations(activations)
-                    print("✓ Activation analysis completed")
-                    
-                    # Plot activation distributions
+                if len(X_torch.shape) == 2:
+                    seq_len = X_torch.shape[1] // 18
+                    if seq_len > 1:
+                        X_torch = X_torch.view(n_samples, seq_len, 18)
+                    else:
+                        X_torch = X_torch.unsqueeze(1)
+
+                X_torch = X_torch.to(DEVICE)
+                print(f"✓ Prepared input tensor with shape: {X_torch.shape}")
+
+                act_analyzer = ActivationAnalyzer()
+                activations = act_analyzer.extract_activations(
+                    model=pytorch_model,
+                    X=X_torch,
+                    device=DEVICE
+                )
+
+                if activations:
+                    print(f"✓ Extracted activations from {len(activations)} layers")
                     try:
-                        act_analyzer.plot_activation_distributions(
-                            activations,
-                            save_path=self.figures_dir / "activation_distributions.png"
-                        )
-                        print("✓ Activation distribution plots saved")
+                        act_stats = act_analyzer.analyze_activations(activations)
+                        print("✓ Activation analysis completed")
+                        try:
+                            act_analyzer.plot_activation_distributions(
+                                activations,
+                                save_path=self.figures_dir / "activation_distributions.png"
+                            )
+                            print("✓ Activation distribution plots saved")
+                        except Exception as e:
+                            print(f"⚠️  Failed to plot activation distributions: {e}")
+                        all_results['activations'] = act_stats
                     except Exception as e:
-                        print(f"⚠️  Failed to plot activation distributions: {e}")
-                    
-                    all_results['activations'] = act_stats
-                    
-                except Exception as e:
-                    print(f"⚠️  Failed to analyze activations: {e}")
-                    all_results['activations'] = {'error': f'analysis_failed: {e}'}
-            else:
-                print("⚠️  No activations extracted")
-                all_results['activations'] = {'error': 'no_activations_extracted'}
-                
-        except Exception as e:
-            print(f"⚠️  Activation extraction failed: {e}")
-            all_results['activations'] = {'error': str(e)}
+                        print(f"⚠️  Failed to analyze activations: {e}")
+                        all_results['activations'] = {'error': f'analysis_failed: {e}'}
+                else:
+                    print("⚠️  No activations extracted")
+                    all_results['activations'] = {'error': 'no_activations_extracted'}
+
+            except Exception as e:
+                print(f"⚠️  Activation extraction failed: {e}")
+                all_results['activations'] = {'error': str(e)}
             
         # ================================================================
         # 6. WEIGHT ANALYSIS
@@ -374,15 +359,24 @@ class ComprehensiveModelMonitor:
         print("SECTION 6: WEIGHT DISTRIBUTION ANALYSIS")
         print(f"{'='*70}\n")
 
-        pytorch_model = model._create_temp_model()
-        pytorch_model = pytorch_model.to(DEVICE)
-        
-        weight_diagnostics = WeightDiagnostics()
-        weight_dists = weight_diagnostics.analyze_weight_distributions(pytorch_model)
-        weight_diagnostics.plot_weight_distributions(
-            weight_dists,
-            save_path=self.figures_dir / "weight_distributions.png"
-        )
+        pytorch_model = self._get_pytorch_model(model)
+
+        if pytorch_model is None:
+            print("⚠️  Weight Distribution Analysis SKIPPED")
+            print("   Model is not a PyTorch nn.Module (e.g. HMM — no weight tensors)")
+            all_results['weights'] = {'error': 'no_pytorch_model'}
+        else:
+            try:
+                weight_diagnostics = WeightDiagnostics()
+                weight_dists = weight_diagnostics.analyze_weight_distributions(pytorch_model)
+                weight_diagnostics.plot_weight_distributions(
+                    weight_dists,
+                    save_path=self.figures_dir / "weight_distributions.png"
+                )
+                all_results['weights'] = weight_dists
+            except Exception as e:
+                print(f"⚠️  Weight analysis failed: {e}")
+                all_results['weights'] = {'error': str(e)}
         
         # ================================================================
         # 7. FEATURE IMPORTANCE (Multiple Methods)
@@ -434,40 +428,46 @@ class ComprehensiveModelMonitor:
         print("SECTION 8: SALIENCY ANALYSIS")
         print(f"{'='*70}\n")
 
-        pytorch_model = model._create_temp_model()
-        pytorch_model = pytorch_model.to(DEVICE)
+        pytorch_model = self._get_pytorch_model(model)
 
-        saliency_analyzer = SaliencyAnalyzer()
+        if pytorch_model is None:
+            print("⚠️  Saliency Analysis SKIPPED")
+            print("   Model is not a PyTorch nn.Module (e.g. HMM — no gradient-based saliency)")
+            all_results['saliency'] = {'error': 'no_pytorch_model'}
+        else:
+            try:
+                saliency_analyzer = SaliencyAnalyzer()
 
-        # Compute for a few samples
-        for class_idx in [0, 1]:
-            sample_idx = np.where(y == class_idx)[0][0]
-            X_sample = torch.tensor(X[sample_idx:sample_idx+1], dtype=torch.float32)
-            
-            # Fix input shape for RNN
-            if len(X_sample.shape) == 2:
-                seq_len = X_sample.shape[1] // 18
-                if seq_len > 1:
-                    X_sample = X_sample.view(1, seq_len, 18)
-                else:
-                    X_sample = X_sample.unsqueeze(1)
-            
-            X_sample = X_sample.to(DEVICE)
-            # pytorch_model.train()
+                for class_idx in [0, 1]:
+                    sample_idx = np.where(y == class_idx)[0][0]
+                    X_sample = torch.tensor(X[sample_idx:sample_idx+1], dtype=torch.float32)
 
-            saliency = saliency_analyzer.compute_saliency(
-                model=pytorch_model,
-                X=X_sample,
-                target_class=class_idx,
-                device=DEVICE
-            )
-            
-            saliency_analyzer.plot_saliency_map(
-                saliency=saliency,
-                channel_names=feature_names,
-                title=f"Saliency Map - Class {class_idx} Sample",
-                save_path=self.figures_dir / f"saliency_class_{class_idx}.png"
-            )
+                    if len(X_sample.shape) == 2:
+                        seq_len = X_sample.shape[1] // 18
+                        if seq_len > 1:
+                            X_sample = X_sample.view(1, seq_len, 18)
+                        else:
+                            X_sample = X_sample.unsqueeze(1)
+
+                    X_sample = X_sample.to(DEVICE)
+
+                    saliency = saliency_analyzer.compute_saliency(
+                        model=pytorch_model,
+                        X=X_sample,
+                        target_class=class_idx,
+                        device=DEVICE
+                    )
+
+                    saliency_analyzer.plot_saliency_map(
+                        saliency=saliency,
+                        channel_names=feature_names,
+                        title=f"Saliency Map - Class {class_idx} Sample",
+                        save_path=self.figures_dir / f"saliency_class_{class_idx}.png"
+                    )
+
+            except Exception as e:
+                print(f"⚠️  Saliency analysis failed: {e}")
+                all_results['saliency'] = {'error': str(e)}
                 
         # ================================================================
         # 9. CLINICAL INTERPRETATION
@@ -522,21 +522,39 @@ class ComprehensiveModelMonitor:
     def _save_comprehensive_report(self, results: Dict[str, Any]):
         """Save comprehensive JSON report."""
         report_path = self.reports_dir / "comprehensive_analysis.json"
-        
-        # Make results JSON-serializable
-        json_results = {}
-        for key, value in results.items():
-            if isinstance(value, dict):
-                json_results[key] = {
-                    k: float(v) if isinstance(v, np.ndarray) or isinstance(v, np.floating) else v
-                    for k, v in value.items()
-                }
-            else:
-                json_results[key] = value
-        
+
+        def _make_serialisable(v):
+            """
+            Recursively convert any value to a JSON-safe type.
+
+            Handles the full range of types that end up in all_results:
+            - nested dicts and lists (recurse)
+            - numpy arrays of any shape (tolist() — works for scalars and arrays)
+            - numpy scalar types (int32, float64, etc.)
+            - Python float inf/nan (not valid JSON — map to None)
+            - everything else passes through unchanged
+            """
+            if isinstance(v, dict):
+                return {kk: _make_serialisable(vv) for kk, vv in v.items()}
+            if isinstance(v, list):
+                return [_make_serialisable(vv) for vv in v]
+            if isinstance(v, np.ndarray):
+                # tolist() converts arrays of any shape to nested Python lists/scalars
+                return _make_serialisable(v.tolist())
+            if isinstance(v, (np.integer,)):
+                return int(v)
+            if isinstance(v, (np.floating,)):
+                fv = float(v)
+                return None if (fv == float('inf') or fv == float('-inf') or fv != fv) else fv
+            if isinstance(v, float):
+                return None if (v == float('inf') or v == float('-inf') or v != v) else v
+            return v
+
+        json_results = _make_serialisable(results)
+
         with open(report_path, 'w') as f:
             json.dump(json_results, f, indent=2)
-        
+
         print(f"\n[Comprehensive Report Saved] {report_path}")
     
     def _print_final_summary(self, results: Dict[str, Any]):
@@ -550,11 +568,12 @@ class ComprehensiveModelMonitor:
             risk = results['overfitting']['risk']
             gap = results['overfitting']['generalization_gap']
             ratio = results['overfitting']['sample_param_ratio']
-            
+
             print(f"🔍 OVERFITTING ASSESSMENT:")
             print(f"   Risk Level:         {risk}")
             print(f"   Generalization Gap: {gap:.4f}")
-            print(f"   Sample/Param Ratio: {ratio:.2f}")
+            ratio_str = "N/A (generative model)" if ratio == float('inf') else f"{ratio:.2f}"
+            print(f"   Sample/Param Ratio: {ratio_str}")
             
             if risk == "HIGH":
                 print(f"\n   🚨 ACTION REQUIRED:")
@@ -579,27 +598,43 @@ class ComprehensiveModelMonitor:
         # Gradient health
         if 'gradients' in results:
             print(f"\n⚡ GRADIENT HEALTH:")
-            first_layer = list(results['gradients'].keys())[0]
-            grad_mean = results['gradients'][first_layer]['mean']
-            
-            if grad_mean < 1e-7:
-                print(f"   🚨 VANISHING gradients detected!")
-            elif grad_mean > 10:
-                print(f"   🚨 EXPLODING gradients detected!")
+            grad_data = results['gradients']
+            if 'error' in grad_data:
+                # Skipped section — error string stored under 'error' key
+                print(f"   ⚠️  Skipped ({grad_data['error']})")
             else:
-                print(f"   ✓ Gradients healthy (mean={grad_mean:.6f})")
-        
+                # grad_data is {layer_name: {'mean': ..., ...}, ...}
+                layer_stats = [v for v in grad_data.values() if isinstance(v, dict) and 'mean' in v]
+                if layer_stats:
+                    grad_mean = layer_stats[0]['mean']
+                    if grad_mean < 1e-7:
+                        print(f"   🚨 VANISHING gradients detected!")
+                    elif grad_mean > 10:
+                        print(f"   🚨 EXPLODING gradients detected!")
+                    else:
+                        print(f"   ✓ Gradients healthy (mean={grad_mean:.6f})")
+                else:
+                    print(f"   ⚠️  No per-layer gradient data available")
+
         # Activation health
         if 'activations' in results:
             print(f"\n🧠 ACTIVATION HEALTH:")
-            total_sparsity = np.mean([
-                stats['sparsity'] for stats in results['activations'].values()
-            ])
-            
-            if total_sparsity > 0.7:
-                print(f"   ⚠️  High sparsity ({total_sparsity:.1%}) - many dead neurons")
+            act_data = results['activations']
+            if 'error' in act_data:
+                print(f"   ⚠️  Skipped ({act_data['error']})")
             else:
-                print(f"   ✓ Good activation diversity (sparsity={total_sparsity:.1%})")
+                sparsity_vals = [
+                    v['sparsity'] for v in act_data.values()
+                    if isinstance(v, dict) and 'sparsity' in v
+                ]
+                if sparsity_vals:
+                    total_sparsity = np.mean(sparsity_vals)
+                    if total_sparsity > 0.7:
+                        print(f"   ⚠️  High sparsity ({total_sparsity:.1%}) - many dead neurons")
+                    else:
+                        print(f"   ✓ Good activation diversity (sparsity={total_sparsity:.1%})")
+                else:
+                    print(f"   ⚠️  No per-layer sparsity data available")
         
         print(f"\n{'#'*70}")
         print(f"# ALL DIAGNOSTICS COMPLETE")

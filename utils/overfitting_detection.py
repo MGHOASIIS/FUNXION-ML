@@ -63,10 +63,24 @@ class OverfittingDetector:
         self.verbose = verbose
 
     def count_parameters(self, model) -> int:
+        """
+        Count trainable parameters for model complexity analysis.
+
+        For PyTorch models (CNN, RNN, Transformer) this uses the standard
+        .parameters() approach. For non-PyTorch models (HMM) _create_temp_model()
+        returns a GaussianHMM which has no .parameters(), so we return 0 and
+        skip the complexity ratio — it isn't meaningful for generative models.
+        """
         temp_model = model._create_temp_model()
-        n_params = sum(p.numel() for p in temp_model.parameters())
-        del temp_model
-        return n_params
+        if temp_model is None:
+            return 0
+        # PyTorch nn.Module
+        if isinstance(temp_model, nn.Module):
+            n_params = sum(p.numel() for p in temp_model.parameters())
+            del temp_model
+            return n_params
+        # Non-PyTorch model (e.g. GaussianHMM) — parameter count not applicable
+        return 0
     
     def analyze(
         self,
@@ -104,23 +118,36 @@ class OverfittingDetector:
         print(f"OVERFITTING ANALYSIS - {model_name}")
         print(f"{'='*70}")
         
-        # Check what keys are available and use appropriate ones
-        if 'train_loss' in fold_results[0] and 'val_loss' in fold_results[0]:
+        # Check what keys are available and use appropriate ones.
+        # Note: HMM fold results contain train_loss/val_loss keys but set them
+        # to None (no training loop). Detect this and fall back to accuracy.
+        if 'train_loss' in fold_results[0] and 'val_loss' in fold_results[0] \
+                and fold_results[0]['train_loss'] is not None \
+                and fold_results[0]['val_loss'] is not None:
             # Using LOSSES
-            train_scores = np.array([r['train_loss'] for r in fold_results])
-            val_scores = np.array([r['val_loss'] for r in fold_results])
+            train_scores = np.array([r['train_loss'] for r in fold_results], dtype=float)
+            val_scores = np.array([r['val_loss'] for r in fold_results], dtype=float)
             metric_type = "LOSS"
             are_losses = True
-        elif 'train_acc' in fold_results[0] and 'val_acc' in fold_results[0]:
+        elif 'train_acc' in fold_results[0] and 'val_acc' in fold_results[0] \
+                and fold_results[0]['train_acc'] is not None \
+                and fold_results[0]['val_acc'] is not None:
             # Using ACCURACIES
-            train_scores = np.array([r['train_acc'] for r in fold_results])
-            val_scores = np.array([r['val_acc'] for r in fold_results])
+            train_scores = np.array([r['train_acc'] for r in fold_results], dtype=float)
+            val_scores = np.array([r['val_acc'] for r in fold_results], dtype=float)
             metric_type = "ACCURACY"
+            are_losses = False
+        elif 'val_acc' in fold_results[0] and fold_results[0]['val_acc'] is not None:
+            # HMM path: train_acc is None but val_acc is populated.
+            # Use val_acc only; generalization gap is computed from val alone.
+            train_scores = None
+            val_scores = np.array([r['val_acc'] for r in fold_results], dtype=float)
+            metric_type = "ACCURACY (val only — generative model)"
             are_losses = False
         elif 'train_score' in fold_results[0] and 'val_score' in fold_results[0]:
             # Generic 'score' fields - detect if loss or accuracy
-            train_scores = np.array([r['train_score'] for r in fold_results])
-            val_scores = np.array([r['val_score'] for r in fold_results])
+            train_scores = np.array([r['train_score'] for r in fold_results], dtype=float)
+            val_scores = np.array([r['val_score'] for r in fold_results], dtype=float)
             # Auto-detect: if any val_score > 1.0, they're losses
             are_losses = any(r['val_score'] > 1.0 for r in fold_results[:min(10, len(fold_results))])
             metric_type = "LOSS" if are_losses else "ACCURACY"
@@ -138,13 +165,19 @@ class OverfittingDetector:
             print(f"   Val {metric_type} (mean):   {np.mean(val_scores):.4f} ± {np.std(val_scores):.4f}")
             print(f"   Gap (val - train):  {generalization_gap:.4f}")
             print(f"   (Positive gap = validation worse = overfitting)")
-        else:
-            # ACCURACIES: higher is better, so train > val means overfitting
+        elif train_scores is not None:
+            # ACCURACIES with both train and val: higher is better, so train > val means overfitting
             generalization_gap = float(np.mean(train_scores) - np.mean(val_scores))
             print(f"   Train {metric_type} (mean): {np.mean(train_scores):.4f} ± {np.std(train_scores):.4f}")
             print(f"   Val {metric_type} (mean):   {np.mean(val_scores):.4f} ± {np.std(val_scores):.4f}")
             print(f"   Gap (train - val):  {generalization_gap:.4f}")
             print(f"   (Positive gap = validation worse = overfitting)")
+        else:
+            # Val-only path (HMM): no train score to compare against
+            generalization_gap = 0.0
+            print(f"   Val {metric_type} (mean):   {np.mean(val_scores):.4f} ± {np.std(val_scores):.4f}")
+            print(f"   Gap:                N/A (generative model — no training score)")
+            print(f"   (Generalization gap requires a discriminative training objective)")
         
         gap_significance = self._classify_gap(abs(generalization_gap))
         print(f"   Severity:           {gap_significance}")
@@ -152,14 +185,23 @@ class OverfittingDetector:
         # 2. Model complexity analysis
         model_capacity = self.count_parameters(model)
         n_samples = len(X)
-        sample_to_param_ratio = n_samples / max(model_capacity, 1)
-        complexity_warning = self._classify_complexity(sample_to_param_ratio)
-        
+
         print(f"\n2. MODEL COMPLEXITY ANALYSIS")
-        print(f"   Parameters:         {model_capacity:,}")
-        print(f"   Samples:            {n_samples}")
-        print(f"   Sample/Param Ratio: {sample_to_param_ratio:.4f} ({complexity_warning})")
-        print(f"   ⚠️  Rule of Thumb: Ratio > 10 is safe for small datasets")
+        if model_capacity == 0:
+            # Non-PyTorch model (e.g. HMM) — skip ratio analysis
+            sample_to_param_ratio = float('inf')
+            complexity_warning = "N/A (generative model — parameter count not applicable)"
+            print(f"   Parameters:         N/A")
+            print(f"   Samples:            {n_samples}")
+            print(f"   Sample/Param Ratio: N/A")
+            print(f"   (HMM complexity controlled by n_components and covariance_type)")
+        else:
+            sample_to_param_ratio = n_samples / model_capacity
+            complexity_warning = self._classify_complexity(sample_to_param_ratio)
+            print(f"   Parameters:         {model_capacity:,}")
+            print(f"   Samples:            {n_samples}")
+            print(f"   Sample/Param Ratio: {sample_to_param_ratio:.4f} ({complexity_warning})")
+            print(f"   ⚠️  Rule of Thumb: Ratio > 10 is safe for small datasets")
         
         # 3. Prediction confidence analysis
         print(f"\n3. PREDICTION CONFIDENCE ANALYSIS")
@@ -315,18 +357,23 @@ class OverfittingDetector:
         return 0.0
     
     def _compute_train_val_correlation(self, fold_results: List[Dict], are_losses: bool = None) -> float:
-        """Compute correlation between train and val scores across folds."""
-        # Extract scores based on available keys
-        if 'train_loss' in fold_results[0] and 'val_loss' in fold_results[0]:
+        """Compute correlation between train and val scores across folds.
+        
+        Returns 0.0 if train scores are unavailable (e.g. HMM val-only path).
+        """
+        # Extract scores based on available keys, skipping None values
+        if 'train_loss' in fold_results[0] and fold_results[0]['train_loss'] is not None:
             train_scores = [r['train_loss'] for r in fold_results]
             val_scores = [r['val_loss'] for r in fold_results]
-        elif 'train_acc' in fold_results[0] and 'val_acc' in fold_results[0]:
+        elif 'train_acc' in fold_results[0] and fold_results[0]['train_acc'] is not None:
             train_scores = [r['train_acc'] for r in fold_results]
             val_scores = [r['val_acc'] for r in fold_results]
-        else:
+        elif 'train_score' in fold_results[0]:
             train_scores = [r['train_score'] for r in fold_results]
             val_scores = [r['val_score'] for r in fold_results]
-        
+        else:
+            return 0.0
+
         corr, _ = pearsonr(train_scores, val_scores)
         return corr
     
@@ -687,15 +734,19 @@ class PerFoldAnalyzer:
         subject_ids : List[str], optional
             Subject IDs for each fold
         """
-        # Extract scores based on available keys
-        if 'train_loss' in fold_results[0] and 'val_loss' in fold_results[0]:
+        # Extract scores based on available keys.
+        if 'train_loss' in fold_results[0] and fold_results[0]['train_loss'] is not None:
             train_scores = [r['train_loss'] for r in fold_results]
             val_scores = [r['val_loss'] for r in fold_results]
             metric_type = "LOSS"
-        elif 'train_acc' in fold_results[0] and 'val_acc' in fold_results[0]:
+        elif 'train_acc' in fold_results[0] and fold_results[0]['train_acc'] is not None:
             train_scores = [r['train_acc'] for r in fold_results]
             val_scores = [r['val_acc'] for r in fold_results]
             metric_type = "ACCURACY"
+        elif 'val_acc' in fold_results[0] and fold_results[0]['val_acc'] is not None:
+            train_scores = None
+            val_scores = [r['val_acc'] for r in fold_results]
+            metric_type = "ACCURACY (val only)"
         else:
             train_scores = [r.get('train_score', 0) for r in fold_results]
             val_scores = [r.get('val_score', 0) for r in fold_results]
@@ -760,31 +811,37 @@ class PerFoldAnalyzer:
         save_path: Optional[str] = None
     ):
         """Plot scores for each fold."""
-        # Extract scores based on available keys
-        if 'train_loss' in fold_results[0] and 'val_loss' in fold_results[0]:
+        # Extract scores based on available keys.
+        # Guard against None values (e.g. HMM sets train_loss/train_acc to None).
+        if 'train_loss' in fold_results[0] and fold_results[0]['train_loss'] is not None:
             train_scores = [r['train_loss'] for r in fold_results]
             val_scores = [r['val_loss'] for r in fold_results]
             metric_label = "Loss"
-        elif 'train_acc' in fold_results[0] and 'val_acc' in fold_results[0]:
+        elif 'train_acc' in fold_results[0] and fold_results[0]['train_acc'] is not None:
             train_scores = [r['train_acc'] for r in fold_results]
             val_scores = [r['val_acc'] for r in fold_results]
             metric_label = "Accuracy"
+        elif 'val_acc' in fold_results[0] and fold_results[0]['val_acc'] is not None:
+            train_scores = None
+            val_scores = [r['val_acc'] for r in fold_results]
+            metric_label = "Accuracy (val only)"
         else:
             train_scores = [r.get('train_score', 0) for r in fold_results]
             val_scores = [r.get('val_score', 0) for r in fold_results]
             metric_label = "Score"
         
         fig, ax = plt.subplots(figsize=(14, 6))
-        
+
         x = np.arange(len(fold_results))
-        
-        ax.plot(x, train_scores, 'o-', label=f'Train {metric_label}', alpha=0.6, markersize=4)
+
+        if train_scores is not None:
+            ax.plot(x, train_scores, 'o-', label=f'Train {metric_label}', alpha=0.6, markersize=4)
+            ax.axhline(np.mean(train_scores), color='blue', linestyle='--',
+                       alpha=0.5, label=f'Mean Train ({np.mean(train_scores):.3f})')
         ax.plot(x, val_scores, 's-', label=f'Val {metric_label}', alpha=0.8, markersize=5)
-        
+
         # Add mean lines
-        ax.axhline(np.mean(train_scores), color='blue', linestyle='--', 
-                   alpha=0.5, label=f'Mean Train ({np.mean(train_scores):.3f})')
-        ax.axhline(np.mean(val_scores), color='red', linestyle='--', 
+        ax.axhline(np.mean(val_scores), color='red', linestyle='--',
                    alpha=0.5, label=f'Mean Val ({np.mean(val_scores):.3f})')
         
         # Shade standard deviation

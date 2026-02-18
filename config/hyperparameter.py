@@ -1,52 +1,108 @@
-HMM_PARAM_GRID = {
-    "covariance_type": ["diag", "full"],
-    "n_components": [2, 3, 4, 5],
-    "n_iter": [50, 100],
-}
+IS_TEST = False
 
-CNN_PARAM_GRID = {
-    # ── CNN trunk ────────────────────────────────────────────
-    "conv_channels": [
-        [32, 64, 64],          # lighter model
-        [64, 128, 128],        # baseline
-        [64, 128, 256]         # deeper final block
-    ],
-    "kernel_sizes": [
-        [7, 5, 3],             # wide → narrow
-        [5, 5, 5]              # symmetric filters
-    ],
-    
-    # ── GRU head ─────────────────────────────────────────────
-    "gru_hidden":     [64, 128, 256],        # capacity sweep [128]
-    "bidirectional":  [False, True],      # causal vs. acausal
-    
-    # ── Regularisation & optimiser ───────────────────────────
-    "dropout_fc":     [0.2, 0.4],         # light vs. 0.4 strong dropout
-    "learning_rate":  [1e-3, 2e-4], # start, 5e-4 half, 2e-4 one-fifth
-    "weight_decay":   [5e-4],       # mild vs. moderate L2 , 5e-4
-    
-    # ── Training loop ────────────────────────────────────────
-    "batch_size":     [32, 64],               # 16 RAM vs. 32 stability
-    "epochs":  [100],                # keep fixed
-}
+if IS_TEST:
+    HMM_PARAM_GRID = {
+        "covariance_type": ["diag"],
+        "n_components": [2],
+        "n_iter": [1],
+    }
 
 
-RNN_PARAM_GRID = {
-    # architecture
-    "rnn_type":      ["lstm", "gru"],    # 2×
-    "hidden_size":   [32, 64, 128],          # 2×
-    "num_layers":    [1, 2],             # 2×
+    CNN_PARAM_GRID = {
+        # CNN trunk 
+        "conv_channels": [
+            [32, 64, 64],
+        ],
+        "kernel_sizes": [
+            [7, 5, 3],   
+        ],
+        
+        # GRU head 
+        "gru_hidden":     [64],   
+        "bidirectional":  [False],
+        
+        # Regularisation & optimiser 
+        "dropout_fc":     [0.2],     
+        "learning_rate":  [1e-3], 
+        "weight_decay":   [5e-4], 
+        
+        # Training loop
+        "batch_size":     [64],
+        "epochs":  [100],
+    }
 
-    # regularisation
-    "bidirectional": [True, False],             # keep fixed (➜ doubles params)
-    "dropout_rnn":   [0.2],              # after each RNN layer
-    "dropout_fc":    [0.3],              # before final FC
+    RNN_PARAM_GRID = {
+        # architecture
+        "rnn_type":      [ "gru"],   
+        "hidden_size":   [32],          
+        "num_layers":    [1],             
 
-    # optimisation
-    "lr":            [1e-3],             # Adam learning-rate
-    "epochs":        [100],               # training epochs
-    "batch_size":    [32, 64],               # mini-batch size
+        # regularisation
+        "bidirectional": [False],            
+        "dropout_rnn":   [0.2],              
+        "dropout_fc":    [0.3],  
 
-    # sequence pooling
-    "pooling":       ["max", "mean", "last"],   # 2× last
-}
+        # optimisation
+        "lr":            [1e-3], 
+        "epochs":        [100],    
+        "batch_size":    [ 64],    
+
+        # sequence pooling
+        "pooling":       ["last"], 
+    }
+
+else:
+
+    HMM_PARAM_GRID = {
+        "covariance_type": ["diag", "full"],
+        "n_components": [2, 3, 4, 5],
+        "n_iter": [50, 100],
+    }
+
+
+    CNN_PARAM_GRID = {
+        # CNN trunk
+        "conv_channels": [
+            [32, 64, 64],        
+            [64, 128, 128],      
+            [64, 128, 256]       
+        ],
+        "kernel_sizes": [
+            [7, 5, 3],           
+            [5, 5, 5]            
+        ],
+        
+        # GRU head
+        "gru_hidden":     [64, 128, 256],
+        "bidirectional":  [False, True],
+        
+        # Regularisation & optimiser 
+        "dropout_fc":     [0.2, 0.4],
+        "learning_rate":  [1e-3, 2e-4],
+        "weight_decay":   [5e-4],      
+        
+        # Training loop 
+        "batch_size":     [32, 64],     
+        "epochs":  [100],               
+    }
+
+
+    RNN_PARAM_GRID = {
+        # architecture
+        "rnn_type":      ["lstm", "gru"],  
+        "hidden_size":   [32, 64, 128],      
+        "num_layers":    [1, 2],             
+
+        # regularisation
+        "bidirectional": [True, False],      
+        "dropout_rnn":   [0.2],              
+        "dropout_fc":    [0.3],              
+
+        # optimisation
+        "lr":            [1e-3],             
+        "epochs":        [100],               
+        "batch_size":    [32, 64],               
+
+        # sequence pooling
+        "pooling":       ["max", "mean", "last"],
+    }

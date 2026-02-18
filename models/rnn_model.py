@@ -517,7 +517,8 @@ class RNNModel(BaseModel, PyTorchModelMixin):
                     best_train_loss = train_loss
                     best_train_acc = train_acc
 
-                print("training_loss:", best_train_loss, "training_acc:", best_train_acc)
+                print(f"[RNN] fold {fold_idx+1} | epoch {epoch+1} | "
+                      f"loss: {train_loss:.4f} | acc: {train_acc:.4f}")
                 
                 # Check early stopping
                 if early_stopper.step(train_loss, model):
