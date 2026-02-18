@@ -5,6 +5,8 @@ Provides comprehensive evaluation metrics, visualization, and analysis tools.
 """
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import (
@@ -12,9 +14,8 @@ from sklearn.metrics import (
     balanced_accuracy_score, accuracy_score,
     precision_score, recall_score, f1_score,
     roc_curve, auc, roc_auc_score,
-    precision_recall_curve, average_precision_score
+    average_precision_score
 )
-from scipy.stats import bootstrap
 from dataclasses import dataclass
 import pandas as pd
 
@@ -389,54 +390,6 @@ class Visualizer:
         plt.show()
     
     @staticmethod
-    def plot_precision_recall_curve(
-        y_true: np.ndarray,
-        y_proba: np.ndarray,
-        title: str = "Precision-Recall Curve",
-        save_path: Optional[str] = None
-    ):
-        """
-        Plot precision-recall curve.
-        
-        Parameters
-        ----------
-        y_true : np.ndarray
-            True labels
-        y_proba : np.ndarray
-            Predicted probabilities
-        title : str
-            Plot title
-        save_path : str, optional
-            Path to save figure
-        """
-        precision, recall, thresholds = precision_recall_curve(y_true, y_proba)
-        ap_score = average_precision_score(y_true, y_proba)
-        
-        fig, ax = plt.subplots(figsize=(8, 6))
-        
-        ax.plot(recall, precision, 'b-', linewidth=2,
-                label=f'PR Curve (AP = {ap_score:.3f})')
-        
-        # Baseline (random classifier)
-        baseline = np.sum(y_true) / len(y_true)
-        ax.plot([0, 1], [baseline, baseline], 'k--', linewidth=1,
-                label=f'Random Classifier (AP = {baseline:.3f})')
-        
-        ax.set_xlabel('Recall', fontsize=12)
-        ax.set_ylabel('Precision', fontsize=12)
-        ax.set_title(title, fontsize=14)
-        ax.legend(loc='best', fontsize=11)
-        ax.grid(alpha=0.3)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"[Saved] {save_path}")
-        
-        plt.show()
-    
-    @staticmethod
     def plot_probability_distribution(
         y_true: np.ndarray,
         y_proba: np.ndarray,
@@ -498,168 +451,6 @@ class Visualizer:
         
         plt.show()
     
-    @staticmethod
-    def plot_calibration_curve(
-        y_true: np.ndarray,
-        y_proba: np.ndarray,
-        n_bins: int = 10,
-        title: str = "Calibration Curve",
-        save_path: Optional[str] = None
-    ):
-        """
-        Plot calibration curve (reliability diagram).
-        
-        Parameters
-        ----------
-        y_true : np.ndarray
-            True labels
-        y_proba : np.ndarray
-            Predicted probabilities
-        n_bins : int
-            Number of bins
-        title : str
-            Plot title
-        save_path : str, optional
-            Path to save figure
-        """
-        # Compute calibration curve
-        from sklearn.calibration import calibration_curve
-        
-        prob_true, prob_pred = calibration_curve(
-            y_true, y_proba, n_bins=n_bins, strategy='uniform'
-        )
-        
-        fig, ax = plt.subplots(figsize=(8, 6))
-        
-        # Calibration curve
-        ax.plot(prob_pred, prob_true, 'bo-', linewidth=2, 
-                markersize=8, label='Model')
-        
-        # Perfect calibration
-        ax.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Perfectly Calibrated')
-        
-        ax.set_xlabel('Mean Predicted Probability', fontsize=12)
-        ax.set_ylabel('Fraction of Positives', fontsize=12)
-        ax.set_title(title, fontsize=14)
-        ax.legend(loc='best', fontsize=11)
-        ax.grid(alpha=0.3)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"[Saved] {save_path}")
-        
-        plt.show()
-
-
-class SubjectLevelAnalyzer:
-    """Analyze predictions at subject level."""
-    
-    @staticmethod
-    def aggregate_subject_predictions(
-        y_true: np.ndarray,
-        y_proba: np.ndarray,
-        subject_ids: np.ndarray,
-        aggregation: str = 'mean'
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Aggregate window-level predictions to subject-level.
-        
-        Parameters
-        ----------
-        y_true : np.ndarray
-            True labels (window-level)
-        y_proba : np.ndarray
-            Predicted probabilities (window-level)
-        subject_ids : np.ndarray
-            Subject identifiers
-        aggregation : str
-            Aggregation method: 'mean', 'median', 'max', 'voting'
-        
-        Returns
-        -------
-        Tuple[np.ndarray, np.ndarray, np.ndarray]
-            (subject_ids, subject_y_true, subject_y_proba)
-        """
-        unique_subjects = np.unique(subject_ids)
-        
-        subject_y_true = []
-        subject_y_proba = []
-        
-        for subject in unique_subjects:
-            mask = subject_ids == subject
-            
-            # True label (should be consistent across windows)
-            true_label = y_true[mask][0]
-            subject_y_true.append(true_label)
-            
-            # Aggregate probabilities
-            probs = y_proba[mask]
-            
-            if aggregation == 'mean':
-                agg_prob = np.mean(probs)
-            elif aggregation == 'median':
-                agg_prob = np.median(probs)
-            elif aggregation == 'max':
-                agg_prob = np.max(probs)
-            elif aggregation == 'voting':
-                # Majority vote
-                votes = (probs >= 0.5).astype(int)
-                agg_prob = float(np.mean(votes))
-            else:
-                raise ValueError(f"Unknown aggregation: {aggregation}")
-            
-            subject_y_proba.append(agg_prob)
-        
-        return (
-            unique_subjects,
-            np.array(subject_y_true),
-            np.array(subject_y_proba)
-        )
-    
-    @staticmethod
-    def subject_level_metrics(
-        y_true: np.ndarray,
-        y_proba: np.ndarray,
-        subject_ids: np.ndarray,
-        aggregation: str = 'mean'
-    ) -> Dict[str, float]:
-        """
-        Compute metrics at subject level.
-        
-        Parameters
-        ----------
-        y_true : np.ndarray
-            True labels (window-level)
-        y_proba : np.ndarray
-            Predicted probabilities (window-level)
-        subject_ids : np.ndarray
-            Subject identifiers
-        aggregation : str
-            Aggregation method
-        
-        Returns
-        -------
-        Dict[str, float]
-            Subject-level metrics
-        """
-        # Aggregate to subject level
-        _, subj_y_true, subj_y_proba = SubjectLevelAnalyzer.aggregate_subject_predictions(
-            y_true, y_proba, subject_ids, aggregation
-        )
-        
-        # Compute metrics
-        subj_y_pred = (subj_y_proba >= 0.5).astype(int)
-        
-        metrics = {
-            'accuracy': accuracy_score(subj_y_true, subj_y_pred),
-            'balanced_accuracy': balanced_accuracy_score(subj_y_true, subj_y_pred),
-            'auc_roc': roc_auc_score(subj_y_true, subj_y_proba),
-            'n_subjects': len(subj_y_true)
-        }
-        
-        return metrics
 
 
 # Example usage

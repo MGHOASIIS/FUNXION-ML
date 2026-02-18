@@ -13,8 +13,7 @@ from tslearn.metrics import cdist_dtw
 from sklearn.manifold import MDS, Isomap, TSNE
 
 from data.transforms import (
-    ZScoreNormalize, Downsample, LowPassFilter, 
-    TimeJitter, TimeWarping, MagnitudeWarping
+    Downsample, TimeJitter, TimeWarping, MagnitudeWarping
 )
 
 

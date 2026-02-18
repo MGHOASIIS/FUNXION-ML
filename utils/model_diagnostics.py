@@ -11,22 +11,12 @@ State-of-the-art tools for understanding WHAT your model learned and HOW:
 """
 from typing import Dict, List, Optional, Tuple, Any, Callable
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass
-
-
-@dataclass
-class DiagnosticResults:
-    """Results from model diagnostics."""
-    gradient_norms: Dict[str, float]
-    activation_stats: Dict[str, Dict[str, float]]
-    weight_distributions: Dict[str, np.ndarray]
-    dead_neurons: Dict[str, int]
-    summary: List[str]
 
 
 class GradientDiagnostics:

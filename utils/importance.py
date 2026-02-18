@@ -10,6 +10,8 @@ Provides multiple methods for computing and analyzing feature importance:
 """
 from typing import Dict, List, Optional, Tuple, Callable, Any
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import balanced_accuracy_score
@@ -256,114 +258,6 @@ class WeightBasedImportance:
             method="conv_weights",
             ranking=ranking
         )
-
-
-class AblationImportance:
-    """
-    Ablation-based feature importance.
-    
-    Measures importance by removing (zeroing out) each feature and
-    observing performance drop.
-    """
-    
-    def __init__(
-        self,
-        model: Any,
-        metric: Callable = balanced_accuracy_score
-    ):
-        """
-        Parameters
-        ----------
-        model : Any
-            Trained model
-        metric : Callable
-            Metric function
-        """
-        self.model = model
-        self.metric = metric
-    
-    def compute(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-        feature_names: Optional[List[str]] = None
-    ) -> ImportanceResults:
-        """
-        Compute ablation importance.
-        
-        Parameters
-        ----------
-        X : np.ndarray
-            Feature matrix
-        y : np.ndarray
-            True labels
-        feature_names : List[str], optional
-            Feature names
-        
-        Returns
-        -------
-        ImportanceResults
-            Importance results
-        """
-        # Get baseline score
-        y_pred = self._predict(X)
-        baseline_score = self.metric(y, y_pred)
-        
-        # Determine features
-        if X.ndim == 2:
-            n_features = X.shape[1]
-        elif X.ndim == 3:
-            n_features = X.shape[2]
-        else:
-            raise ValueError(f"Unsupported X shape: {X.shape}")
-        
-        if feature_names is None:
-            feature_names = [f"feature_{i}" for i in range(n_features)]
-        
-        # Compute importance for each feature
-        importances = np.zeros(n_features)
-        
-        for feat_idx in range(n_features):
-            # Zero out feature
-            X_ablated = self._ablate_feature(X, feat_idx)
-            
-            # Compute score
-            y_pred_abl = self._predict(X_ablated)
-            score_abl = self.metric(y, y_pred_abl)
-            
-            # Importance = drop in performance
-            importances[feat_idx] = baseline_score - score_abl
-        
-        ranking = np.argsort(importances)[::-1]
-        
-        return ImportanceResults(
-            feature_names=feature_names,
-            importance_scores=importances,
-            method="ablation",
-            baseline_score=baseline_score,
-            ranking=ranking
-        )
-    
-    def _predict(self, X: np.ndarray) -> np.ndarray:
-        """Make predictions."""
-        if hasattr(self.model, 'predict'):
-            return self.model.predict(X)
-        elif hasattr(self.model, 'predict_proba'):
-            proba = self.model.predict_proba(X)
-            return (proba[:, 1] >= 0.5).astype(int)
-        else:
-            raise ValueError("Model must have predict or predict_proba method")
-    
-    def _ablate_feature(self, X: np.ndarray, feature_idx: int) -> np.ndarray:
-        """Zero out a feature."""
-        X_ablated = X.copy()
-        
-        if X.ndim == 2:
-            X_ablated[:, feature_idx] = 0
-        elif X.ndim == 3:
-            X_ablated[:, :, feature_idx] = 0
-        
-        return X_ablated
 
 
 class ImportanceVisualizer:

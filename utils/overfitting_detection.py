@@ -8,6 +8,8 @@ Critical for N=60 sample size where models can easily memorize rather than learn
 """
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from dataclasses import dataclass
