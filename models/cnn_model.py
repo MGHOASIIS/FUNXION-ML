@@ -5,8 +5,10 @@ Implements 1D CNN with:
 - Configurable conv layers
 - Batch normalization
 - Global average pooling
+- Early stopping (matching RNN)
 - Hyperparameter search with LOO CV
-- Feature importance via first-layer weights
+- Feature importance via averaged first-layer weights across all folds
+- Full per-fold diagnostic tracking for overfitting monitoring (Phase 2)
 """
 from typing import Dict, Optional, List
 import numpy as np
@@ -24,20 +26,91 @@ from utils.metrics import compute_metrics
 
 
 # ============================================================================
+# Early Stopping
+# ============================================================================
+
+class EarlyStopping:
+    """Early stopping to prevent overfitting."""
+
+    def __init__(self, patience: int = 10, min_delta: float = 1e-4, mode: str = "min"):
+        """
+        Parameters
+        ----------
+        patience : int
+            Number of epochs to wait before stopping
+        min_delta : float
+            Minimum change to qualify as improvement
+        mode : str
+            'min' for loss, 'max' for accuracy
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.counter = 0
+        self.best_score = None
+        self.best_state = None
+        self.early_stop = False
+
+    def step(self, score: float, model: nn.Module) -> bool:
+        """
+        Check if training should stop.
+
+        Parameters
+        ----------
+        score : float
+            Current metric value (e.g. training loss)
+        model : nn.Module
+            Model to snapshot if improved
+
+        Returns
+        -------
+        bool
+            True if training should stop
+        """
+        if self.best_score is None:
+            self.best_score = score
+            self.best_state = model.state_dict()
+            return False
+
+        if self.mode == "min":
+            improved = score < (self.best_score - self.min_delta)
+        else:
+            improved = score > (self.best_score + self.min_delta)
+
+        if improved:
+            self.best_score = score
+            self.best_state = model.state_dict()
+            self.counter = 0
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+                return True
+
+        return False
+
+    def load_best(self, model: nn.Module) -> nn.Module:
+        """Restore model to the best observed state."""
+        if self.best_state is not None:
+            model.load_state_dict(self.best_state)
+        return model
+
+
+# ============================================================================
 # CNN Architecture
 # ============================================================================
 
 class CNNClassifier(nn.Module):
     """
     1D CNN for multivariate time-series classification.
-    
+
     Architecture:
         Input: (batch, C_in, T)
         Conv blocks: (Conv1d → BatchNorm → ReLU) × K layers
         Global pooling: AdaptiveAvgPool1d
         Classifier: Dropout → Linear
     """
-    
+
     def __init__(
         self,
         in_channels: int,
@@ -61,14 +134,14 @@ class CNNClassifier(nn.Module):
             Number of output classes
         """
         super().__init__()
-        
+
         assert len(conv_channels) == len(kernel_sizes), \
             "conv_channels and kernel_sizes must have same length"
-        
+
         # Build feature extractor
         layers = []
         prev_channels = in_channels
-        
+
         for out_channels, kernel_size in zip(conv_channels, kernel_sizes):
             layers.extend([
                 nn.Conv1d(
@@ -81,9 +154,9 @@ class CNNClassifier(nn.Module):
                 nn.ReLU(inplace=True)
             ])
             prev_channels = out_channels
-        
+
         self.feature_extractor = nn.Sequential(*layers)
-        
+
         # Global average pooling + classifier
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
@@ -91,16 +164,16 @@ class CNNClassifier(nn.Module):
             nn.Dropout(dropout_fc) if dropout_fc > 0 else nn.Identity(),
             nn.Linear(prev_channels, n_classes)
         )
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass.
-        
+
         Parameters
         ----------
         x : torch.Tensor
             Input tensor (batch, C_in, T)
-        
+
         Returns
         -------
         torch.Tensor
@@ -109,16 +182,16 @@ class CNNClassifier(nn.Module):
         features = self.feature_extractor(x)
         logits = self.classifier(features)
         return logits
-    
+
     def get_features(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Extract feature representations.
-        
+        Extract feature representations before the classifier head.
+
         Parameters
         ----------
         x : torch.Tensor
             Input tensor (batch, C_in, T)
-        
+
         Returns
         -------
         torch.Tensor
@@ -134,11 +207,32 @@ class CNNClassifier(nn.Module):
 # ============================================================================
 
 class CNNModel(BaseModel, PyTorchModelMixin):
-    """CNN model wrapper with LOO CV and hyperparameter search."""
-    
-    def __init__(self):
-        super().__init__(model_name="CNN")
-    
+    """CNN model wrapper with LOO CV, early stopping, and hyperparameter search."""
+
+    def __init__(self, checkpoints_dir=None, patience=10, min_delta=1e-4, task=None, paradigm=None):
+        """
+        Parameters
+        ----------
+        checkpoints_dir : Path or None
+            Directory to save model checkpoints
+        patience : int
+            Early stopping patience (epochs)
+        min_delta : float
+            Minimum loss improvement to reset early stopping counter
+        task : str or None
+            Task name (e.g. 'jar_opening') — stored for downstream tracking
+        paradigm : int or None
+            Classification paradigm index — stored for downstream tracking
+        """
+        super().__init__(
+            model_name="CNN",
+            checkpoints_dir=checkpoints_dir,
+            patience=patience,
+            min_delta=min_delta,
+            task=task,
+            paradigm=paradigm
+        )
+
     def train_and_evaluate(
         self,
         X: np.ndarray,
@@ -148,73 +242,88 @@ class CNNModel(BaseModel, PyTorchModelMixin):
     ) -> ModelResults:
         """
         Train CNN with hyperparameter search using LOO CV.
-        
+
         Parameters
         ----------
         X : np.ndarray
-            Feature matrix (N, C, T) - channels-first format
+            Feature matrix (N, C, T) — channels-first format
         y : np.ndarray
             Labels
         subject_ids : np.ndarray, optional
-            Subject identifiers for proper CV
+            Subject identifiers for subject-level CV splits
         param_grid : Dict, optional
             Hyperparameter grid for search
-        
+
         Returns
         -------
         ModelResults
-            Complete results including metrics and predictions
+            Complete results including metrics, per-fold diagnostics, and predictions
         """
         if param_grid is None:
             param_grid = self._get_default_param_grid()
-        
+
         # Convert to tensors
         X_tensor = torch.tensor(X, dtype=torch.float32)
         y_tensor = torch.tensor(y, dtype=torch.long)
-        
-        # Handle subject-level CV if we have subject IDs
+
+        # Set up LOO CV splits at the subject or sample level
         if subject_ids is not None:
             unique_subjects = np.unique(subject_ids)
             loo = LeaveOneOut()
             cv_splits = list(loo.split(unique_subjects))
-            
             print(f"\n[CNN] Subject-level LOO CV: {len(unique_subjects)} subjects")
-            
-            # Map subject IDs to indices
-            def get_indices_for_subject(subject_id):
-                return np.where(subject_ids == subject_id)[0]
         else:
+            unique_subjects = None
             loo = LeaveOneOut()
             cv_splits = list(loo.split(range(len(X))))
-            unique_subjects = None
             print(f"\n[CNN] Sample-level LOO CV: {len(X)} samples")
-        
+
         grid = list(ParameterGrid(param_grid))
         print(f"[CNN] Evaluating {len(grid)} hyperparameter combinations...")
-        
-        # Parallel hyperparameter search
-        with parallel_backend("loky", inner_max_num_threads=1):
-            results = Parallel(n_jobs=-1, verbose=10)(
-                delayed(self._loo_score)(
-                    params, X_tensor, y_tensor, cv_splits,
-                    subject_ids, unique_subjects
-                )
-                for params in grid
+
+        # Sequential search (mirrors RNN — avoids Parallel/loky issues with CUDA)
+        results = []
+        for params in grid:
+            score = self._loo_score(
+                params, X_tensor, y_tensor,
+                cv_splits, subject_ids, unique_subjects
             )
-        
-        # Select best configuration
+            results.append(score)
+
+        # Select best configuration by balanced accuracy
         best_result = max(results, key=lambda t: t[0])
-        best_score, best_params, y_true, y_pred, y_proba, first_layer_weights = best_result
-        
+        best_score, best_params, y_true, y_pred, y_proba, avg_first_layer_weights, per_fold_results = best_result
+
         print(f"\n[CNN] Best params: {best_params}")
         print(f"[CNN] Best balanced accuracy: {best_score:.4f}")
-        
-        # Compute feature importance from first layer weights
-        feature_imp = self._compute_channel_importance(first_layer_weights)
-        
-        # Compute metrics
+
+        # Compute feature importance from averaged first-layer weights
+        feature_imp = self._compute_channel_importance(avg_first_layer_weights)
+
+        # Compute aggregate metrics
         metrics = compute_metrics(y_true, y_pred, y_proba)
-        
+
+        # Save best model checkpoint
+        if self.checkpoint_dir:
+            from datetime import datetime
+            best_path = self.checkpoint_dir / f"best_model_BA{best_score:.4f}.pt"
+
+            torch.save({
+                'model_name': 'CNN',
+                'hyperparameters': best_params,
+                'metrics': {'balanced_accuracy': best_score, **metrics},
+                'feature_importance': feature_imp,
+                'input_shape': list(X.shape),
+                'predictions': {
+                    'y_true': y_true.tolist(),
+                    'y_pred': y_pred.tolist(),
+                    'y_proba': y_proba.tolist()
+                },
+                'timestamp': datetime.now().isoformat()
+            }, best_path)
+
+            print(f"\n BEST MODEL SAVED: {best_path}")
+
         return ModelResults(
             metrics=metrics,
             best_params=best_params,
@@ -222,9 +331,10 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             y_true=y_true,
             y_pred=y_pred,
             y_proba=y_proba,
-            X_shape=X.shape
+            X_shape=X.shape,
+            per_fold_results=per_fold_results  # populated — not None like before
         )
-    
+
     def _loo_score(
         self,
         cfg: Dict,
@@ -235,8 +345,8 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         unique_subjects: Optional[np.ndarray]
     ):
         """
-        Compute LOO CV score for given hyperparameters.
-        
+        Run one full LOO CV pass for a given hyperparameter configuration.
+
         Parameters
         ----------
         cfg : Dict
@@ -246,51 +356,58 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         y : torch.Tensor
             Labels
         cv_splits : List
-            CV split indices
+            Precomputed LOO split indices
         subject_ids : np.ndarray or None
-            Subject identifiers
+            Subject identifiers (for subject-level splits)
         unique_subjects : np.ndarray or None
-            Unique subject IDs for subject-level CV
-        
+            Unique subject IDs
+
         Returns
         -------
         tuple
-            (balanced_accuracy, config, y_true, y_pred, y_proba, first_layer_weights)
+            (balanced_accuracy, config, y_true, y_pred, y_proba,
+             avg_first_layer_weights, per_fold_results)
         """
         y_true, y_pred, y_proba = [], [], []
+        all_first_layer_weights = []   # accumulate across folds, not just last
+        per_fold_results = []          # full per-fold diagnostics
+
         g = torch.Generator().manual_seed(42)
-        
-        for train_idx, test_idx in cv_splits:
-            # Handle subject-level splits
+
+        for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
+
+            # Resolve sample indices from subject-level or sample-level splits
             if subject_ids is not None:
                 train_subjects = unique_subjects[train_idx]
                 test_subjects = unique_subjects[test_idx]
-                
+
                 train_mask = np.isin(subject_ids, train_subjects)
                 test_mask = np.isin(subject_ids, test_subjects)
-                
+
                 train_sample_idx = np.where(train_mask)[0]
                 test_sample_idx = np.where(test_mask)[0]
             else:
+                train_subjects = np.array([fold_idx])   # placeholder for logging
+                test_subjects = np.array([fold_idx])
                 train_sample_idx = train_idx
                 test_sample_idx = test_idx
-            
+
             # Split data
             X_train = X[train_sample_idx]
             y_train = y[train_sample_idx]
             X_test = X[test_sample_idx]
             y_test_list = y[test_sample_idx].tolist()
-            
-            # Create model
+
+            # Instantiate model fresh for each fold
             model = CNNClassifier(
-                in_channels=X.shape[1],  # C dimension
+                in_channels=X.shape[1],
                 n_classes=2,
                 conv_channels=cfg["conv_channels"],
                 kernel_sizes=cfg["kernel_sizes"],
                 dropout_fc=cfg["dropout_fc"]
             ).to(DEVICE)
-            
-            # Create data loader
+
+            # Data loader
             train_dataset = TensorDataset(X_train, y_train)
             train_loader = DataLoader(
                 train_dataset,
@@ -298,99 +415,156 @@ class CNNModel(BaseModel, PyTorchModelMixin):
                 shuffle=True,
                 generator=g
             )
-            
+
             optimizer = torch.optim.Adam(
                 model.parameters(),
                 lr=cfg["learning_rate"],
                 weight_decay=cfg["weight_decay"]
             )
             criterion = nn.CrossEntropyLoss()
-            
-            # Train with warmup (freeze feature extractor)
-            for p in model.feature_extractor.parameters():
-                p.requires_grad = False
-            for p in model.classifier.parameters():
-                p.requires_grad = True
-            
-            for _ in range(cfg["warmup_epochs"]):
-                self.train_epoch(model, train_loader, optimizer, criterion, DEVICE)
-            
-            # Fine-tune (unfreeze all)
-            for p in model.parameters():
-                p.requires_grad = True
-            
-            optimizer = torch.optim.Adam(
-                model.parameters(),
-                lr=cfg["learning_rate"],
-                weight_decay=cfg["weight_decay"]
+
+            # Early stopping (mirrors RNN)
+            early_stopper = EarlyStopping(
+                patience=self.patience,
+                min_delta=self.min_delta,
+                mode="min"
             )
-            
-            for _ in range(cfg["finetune_epochs"]):
-                self.train_epoch(model, train_loader, optimizer, criterion, DEVICE)
-            
-            # Predict on test set
+
+            best_train_loss = float('inf')
+            best_train_acc = 0.0
+
+            # Training loop with early stopping
+            for epoch in range(cfg["epochs"]):
+                train_loss, train_acc = self.train_epoch(
+                    model, train_loader, optimizer, criterion, DEVICE
+                )
+
+                if train_loss < best_train_loss:
+                    best_train_loss = train_loss
+                    best_train_acc = train_acc
+
+                print(f"[CNN] fold {fold_idx+1} | epoch {epoch+1} | "
+                      f"loss: {train_loss:.4f} | acc: {train_acc:.4f}")
+
+                if early_stopper.step(train_loss, model):
+                    break
+
+            print(f"{'='*30}")
+            print(f"[CNN] Fold {fold_idx + 1} complete")
+            print(f"{'='*30}")
+
+            # Restore best weights before evaluation
+            model = early_stopper.load_best(model)
+
+            # Checkpoint every 10 folds (mirrors RNN)
+            if self.checkpoint_dir:
+                should_save = (fold_idx % 10 == 0) or (fold_idx == len(cv_splits) - 1)
+                if should_save:
+                    torch.save({
+                        'fold': fold_idx,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'config': cfg,
+                        'metrics': {'train_loss': early_stopper.best_score}
+                    }, self.checkpoint_dir / f"fold_{fold_idx:03d}.pt")
+
+            # Evaluate on held-out subject
             model.eval()
             with torch.no_grad():
                 logits = model(X_test.to(DEVICE))
                 probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
                 preds = (probs >= 0.5).astype(int)
-            
+
+                # Compute held-out loss for generalization curve (overfitting monitoring)
+                y_test_tensor = torch.tensor(y_test_list, dtype=torch.long).to(DEVICE)
+                val_loss = criterion(logits, y_test_tensor).item()
+
             y_true.extend(y_test_list)
             y_pred.extend(preds.tolist())
             y_proba.extend(probs.tolist())
-            
-            # Save first layer weights from last fold
-            first_layer = model.feature_extractor[0]
-        
-        # Compute balanced accuracy
+
+            fold_ba = balanced_accuracy_score(y_test_list, preds)
+
+            per_fold_results.append({
+                'fold': fold_idx,
+                'test_subjects': test_subjects.tolist() if subject_ids is not None else [fold_idx],
+
+                # Losses — generalization curve
+                'train_loss': float(early_stopper.best_score),
+                'val_loss': float(val_loss),
+
+                # Accuracies
+                'train_acc': float(best_train_acc),
+                'val_acc': float(fold_ba),
+
+                # Predictions
+                'y_true': y_test_list,
+                'y_pred': preds.tolist(),
+                'y_proba': probs.tolist(),
+
+                # Training diagnostics
+                'epochs_trained': epoch + 1,
+                'early_stopped': early_stopper.early_stop
+            })
+
+            # FIX: accumulate first-layer weights from every fold
+            first_layer_weights = model.feature_extractor[0].weight.detach().cpu().clone()
+            all_first_layer_weights.append(first_layer_weights)
+
+            # Clean up
+            del model
+            torch.cuda.empty_cache()
+
+        # Aggregate
         ba = balanced_accuracy_score(y_true, y_pred)
-        
-        # Extract first layer weights
-        first_layer_weights = first_layer.weight.detach().cpu()
-        
-        # Clean up
-        del model
-        torch.cuda.empty_cache()
-        
+
+        # FIX: average weights across all folds (not just last fold)
+        avg_first_layer_weights = torch.stack(all_first_layer_weights).mean(dim=0)
+
         return (
             ba,
             cfg,
             np.array(y_true),
             np.array(y_pred),
             np.array(y_proba),
-            first_layer_weights
+            avg_first_layer_weights,
+            per_fold_results
         )
-    
+
     def _compute_channel_importance(self, first_layer_weights: torch.Tensor) -> Dict[str, float]:
         """
-        Compute channel importance from first convolutional layer weights.
-        
+        Compute channel importance from averaged first convolutional layer weights.
+
+        Averaging across folds before computing importance gives a more stable
+        estimate than using a single (potentially atypical) fold.
+
         Parameters
         ----------
         first_layer_weights : torch.Tensor
-            Weights from first conv layer (out_channels, in_channels, kernel_size)
-        
+            Averaged weights from first conv layer (out_channels, in_channels, kernel_size)
+
         Returns
         -------
         Dict[str, float]
-            Channel names mapped to importance scores
+            Channel names mapped to importance scores, sorted descending
         """
-        # Average absolute weights across output channels and kernel dimension
-        # Shape: (out_channels, in_channels, kernel_size) → (in_channels,)
+        # Reduce: abs mean over output channels and kernel dimension → (in_channels,)
         importance = first_layer_weights.abs().mean(dim=(0, 2)).numpy()
-        
-        # Create dictionary
+
+        # Normalize (mirrors RNN)
+        importance = importance / (importance.sum() + 1e-12)
+
         feature_imp = {
             CHAN_NAME[i]: float(importance[i])
             for i in np.argsort(importance)[::-1]
         }
-        
-        print("\n[CNN] Top 5 Important Channels:")
-        for i, (feat, imp) in enumerate(list(feature_imp.items())[:5]):
+
+        print("\n[CNN] Channel Importance:")
+        for i, (feat, imp) in enumerate(list(feature_imp.items())):
             print(f"  {i+1}. {feat}: {imp:.4f}")
-        
+
         return feature_imp
-    
+
     def compute_feature_importance(
         self,
         X: np.ndarray,
@@ -399,18 +573,55 @@ class CNNModel(BaseModel, PyTorchModelMixin):
     ) -> Dict[str, float]:
         """
         Feature importance already computed during training.
-        This method is here for interface consistency.
+        This method exists for interface consistency with BaseModel.
         """
         if self.feature_importance is not None:
             return self.feature_importance
-        
+
         raise RuntimeError(
             "Feature importance not available. "
             "Run train_and_evaluate() first."
         )
-    
+
+    def _create_temp_model(self) -> Optional[nn.Module]:
+        """
+        Reconstruct a CNNClassifier from best_params for post-hoc analysis
+        (e.g. parameter counting, architecture inspection, weight visualisation).
+
+        Mirrors the same pattern used in RNNModel._create_temp_model(), but
+        uses CNNClassifier and CNN-specific hyperparameter keys.
+
+        Note: the returned model is uninitialised (random weights) — it
+        reflects the architecture of the best configuration, not the trained
+        weights. Use saved checkpoints to restore trained weights.
+
+        Returns
+        -------
+        nn.Module or None
+            CNNClassifier instance if best_params are available, else None
+        """
+        if not hasattr(self, 'best_params') or self.best_params is None:
+            return None
+
+        try:
+            from config.constants import DOFS  # DOFS = 18 input channels
+
+            temp_model = CNNClassifier(
+                in_channels=DOFS,
+                conv_channels=self.best_params["conv_channels"],
+                kernel_sizes=self.best_params["kernel_sizes"],
+                dropout_fc=self.best_params["dropout_fc"],
+                n_classes=2
+            )
+
+            return temp_model
+
+        except Exception as e:
+            print(f"⚠️  Could not create temp CNN model: {e}")
+            return None
+
     def _get_default_param_grid(self) -> Dict:
-        """Get default hyperparameter grid for CNN."""
+        """Load default hyperparameter grid for CNN."""
         from config.hyperparameter import CNN_PARAM_GRID
         return CNN_PARAM_GRID
 
@@ -427,8 +638,8 @@ def create_cnn_model(
     n_classes: int = 2
 ) -> CNNClassifier:
     """
-    Convenience function to create a CNN model.
-    
+    Convenience function to create a CNNClassifier.
+
     Parameters
     ----------
     input_channels : int
@@ -438,10 +649,10 @@ def create_cnn_model(
     kernel_sizes : List[int]
         Kernel sizes for each conv layer
     dropout_fc : float
-        Dropout rate
+        Dropout rate before classifier head
     n_classes : int
-        Number of classes
-    
+        Number of output classes
+
     Returns
     -------
     CNNClassifier
@@ -458,19 +669,17 @@ def create_cnn_model(
 
 # Example usage
 if __name__ == "__main__":
-    # Test CNN architecture
     model = create_cnn_model()
     print(model)
-    
-    # Test forward pass
+
     batch_size = 4
     channels = 18
     time_steps = 200
-    
+
     x = torch.randn(batch_size, channels, time_steps)
     logits = model(x)
     features = model.get_features(x)
-    
+
     print(f"\nInput shape: {x.shape}")
     print(f"Logits shape: {logits.shape}")
     print(f"Features shape: {features.shape}")

@@ -570,8 +570,8 @@ def main():
     if args.diagnostics:
         print(f"   Diagnostics:   {diagnostics_dir}")
     
-    print("\nTop 5 Features:")
-    for i, (feat, imp) in enumerate(list(results.feature_importance.items())[:5]):
+    print("\nTop 6 Features:")
+    for i, (feat, imp) in enumerate(list(results.feature_importance.items())[:6]):
         print(f"  {i+1}. {feat}: {imp:.4f}")
     print("="*70 + "\n")
 

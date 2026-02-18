@@ -25,10 +25,9 @@ CNN_PARAM_GRID = {
     "learning_rate":  [1e-3, 2e-4], # start, 5e-4 half, 2e-4 one-fifth
     "weight_decay":   [5e-4],       # mild vs. moderate L2 , 5e-4
     
-    # ── Training loop tweaks (optional) ─────────────────────
+    # ── Training loop ────────────────────────────────────────
     "batch_size":     [32, 64],               # 16 RAM vs. 32 stability
-    "warmup_epochs":  [5],                # keep fixed
-    "finetune_epochs":[15]                # keep fixed (early-stop anyway)
+    "epochs":  [100],                # keep fixed
 }
 
 
@@ -45,7 +44,7 @@ RNN_PARAM_GRID = {
 
     # optimisation
     "lr":            [1e-3],             # Adam learning-rate
-    "epochs":        [30],               # training epochs
+    "epochs":        [100],               # training epochs
     "batch_size":    [32, 64],               # mini-batch size
 
     # sequence pooling

@@ -408,7 +408,7 @@ class ComprehensiveModelMonitor:
                     aggregate='mean'
                 )
                 
-                print_importance_report(weight_imp_results, top_k=10)
+                print_importance_report(weight_imp_results, top_k=DOFS)
                 
                 imp_viz = ImportanceVisualizer()
                 imp_viz.plot_importance_bars(
