@@ -1,11 +1,6 @@
-Materials/
-# data/
-old_data/
+Archived/
 *.xlsx
 *.csv
 environment.yml
-experiment_errors.log
 __pycache__/
-published_results/
-Yashwanth Dev/
 experiments/
