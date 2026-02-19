@@ -222,6 +222,82 @@ class SlidingWindowPreprocessor(BasePreprocessor):
         return X_scaled, y, np.array(all_window_subject_ids)
 
 
+
+class VariableLengthPreprocessor(BasePreprocessor):
+    """
+    Preprocessor for models that natively handle variable-length sequences.
+
+    Designed specifically for HMMs (and future sequence models) that use
+    the hmmlearn 'lengths' parameter — no truncation, padding, or stacking
+    is applied.  Each subject keeps their full recording.
+
+    What it does
+    ------------
+    1. Extracts raw (T_i, 18) arrays from g1/g0 (drops timestamp col if present)
+    2. Z-score normalises using a single StandardScaler fit on all data
+       concatenated — same approach as TruncatePreprocessor, preserving
+       inter-subject differences in absolute sensor values
+    3. Returns X as a plain Python list of (T_i, 18) arrays — NOT stacked
+       This is what hmmlearn expects: a list where each element can have
+       a different T_i (sequence length)
+
+    Why this matters for HMM
+    ------------------------
+    TruncatePreprocessor forces all sequences to T_min (shortest subject).
+    For jar opening (Task 1), the shortest control recording may be ~20s
+    while the longest patient recording is ~400s.  At 50 Hz that means
+    patients lose up to 19,000 frames from the START of their recording —
+    exactly where "Jar picked up" and early lid-grabbing events occur.
+    The HMM then never sees the most clinically relevant part of the task.
+
+    Returns
+    -------
+    X  : list of np.ndarray, each shape (T_i, 18)   ← variable length
+    y  : np.ndarray shape (N,)
+    subject_ids : np.ndarray shape (N,)
+    """
+
+    def prepare_data(
+        self,
+        g1: Dict,
+        g0: Dict
+    ) -> Tuple[list, np.ndarray, np.ndarray]:
+        """
+        Extract variable-length z-scored sequences from g1 and g0.
+
+        Parameters
+        ----------
+        g1 : Dict  {subject_id: tensor (T_i, C) or (T_i, C+1)}
+        g0 : Dict  {subject_id: tensor (T_i, C) or (T_i, C+1)}
+
+        Returns
+        -------
+        X           : list of np.ndarray (T_i, 18)
+        y           : np.ndarray (N,)
+        subject_ids : np.ndarray (N,)
+        """
+        all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
+        signals = self._extract_signals(all_tensors)
+        signals = [self._to_numpy(s) for s in signals]
+
+        # Lengths before normalisation — for logging
+        lengths = [s.shape[0] for s in signals]
+        print(f"\n[VariableLengthPreprocessor] {len(signals)} sequences")
+        print(f"  Length min={min(lengths)}  max={max(lengths)}  "
+              f"mean={int(np.mean(lengths))}  (frames @ 50 Hz)")
+        print(f"  No truncation — each subject keeps their full recording")
+
+        # Z-score normalise: fit scaler on all frames concatenated
+        # then transform each sequence independently
+        all_frames = np.vstack(signals)           # (sum(T_i), 18)
+        self.scaler.fit(all_frames)
+        X_scaled = [self.scaler.transform(s) for s in signals]
+
+        print(f"  Z-score normalised (scaler fit on {all_frames.shape[0]} frames)")
+
+        return X_scaled, y, np.array(subject_ids)
+
+
 class PreprocessorFactory:
     """Factory for creating preprocessors."""
     
@@ -237,7 +313,7 @@ class PreprocessorFactory:
         Parameters
         ----------
         method : str
-            'truncate', 'sliding_window', 'padding', 'dtw_embedding'
+            'truncate', 'sliding_window', 'padding', 'dtw_embedding','variable_length'
         model_type : str
             'hmm', 'cnn', or 'rnn'
         **kwargs
@@ -252,7 +328,7 @@ class PreprocessorFactory:
         if model_type.lower() == "cnn":
             output_format = "channels_first"
         else:
-            output_format = "3d" # rnn and transformers covered
+            output_format = "3d"
         
         if method == "truncate":
             return TruncatePreprocessor(output_format=output_format)
@@ -270,6 +346,8 @@ class PreprocessorFactory:
                 output_format=output_format,
                 **kwargs
             )
+        elif method == "variable_length":
+            return VariableLengthPreprocessor()
         else:
             raise ValueError(f"Unknown preprocessing method: {method}")
 
