@@ -25,7 +25,7 @@ from data.preprocessors import PreprocessorFactory, AugmentedPreprocessor
 from models.hmm_model import HMMModel
 from models.cnn_model import CNNModel
 from models.rnn_model import RNNModel
-
+from models.transformer_model import TransformerModel
 
 def load_data(task: int):
     """Load patient and control data for given task."""
@@ -46,18 +46,23 @@ def load_data(task: int):
     return patient_data, control_data
 
 
-def create_model(model_type: str, checkpoints_dir=None, patience=None, min_delta=None, task=None, paradigm=None):
-    """Create model instance."""
+def create_model(model_type, checkpoints_dir=None, patience=None,
+                 min_delta=None, task=None, paradigm=None):
     model_type = model_type.lower()
-    
     if model_type == "hmm":
-        return HMMModel(checkpoints_dir=checkpoints_dir, task=task, paradigm=paradigm)
+        return HMMModel(...)
     elif model_type == "cnn":
-        return CNNModel(checkpoints_dir, patience=patience, min_delta=min_delta, task=task, paradigm=paradigm)
+        return CNNModel(...)
     elif model_type == "rnn":
-        return RNNModel(checkpoints_dir, patience=patience, min_delta=min_delta, task=task, paradigm=paradigm)
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        return RNNModel(...)
+    elif model_type == "transformer":          # ADD THIS
+        return TransformerModel(
+            checkpoints_dir=checkpoints_dir,
+            patience=patience,
+            min_delta=min_delta,
+            task=task,
+            paradigm=paradigm
+        )
 
 
 def save_results(results, task: int, paradigm: int, model_name: str, method: str, save_dir: Path):
@@ -168,7 +173,7 @@ def main():
         "--model",
         type=str,
         required=True,
-        choices=["hmm", "cnn", "rnn"],
+        choices=["hmm", "cnn", "rnn", "transformer"],
         help="Model type"
     )
     

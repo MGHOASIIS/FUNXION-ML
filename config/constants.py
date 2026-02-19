@@ -41,7 +41,8 @@ PARADIGM_NAMES = {
 MODEL_NAMES = {
     3: "HMM",
     4: "CNN",
-    5: "RNN"
+    5: "RNN",
+    6: "Transformer",
 }
 
 # Feature filter names
