@@ -14,7 +14,7 @@ This research project develops state-of-the-art AI models to classify shoulder p
 - **Models**: HMM, 1D-CNN, RNN (GRU/LSTM, bidirectional)
 - **Evaluation**: Leave-One-Out Cross-Validation (LOO CV) with balanced accuracy, recall, AUC
 - **Data**: N=60, 18 features per timepoint, 6 functional tasks, 4 classification paradigms
-- **Results**: RNN achieved most consistent performance (BA: 0.60–0.84, recall: 0.67–0.95)
+- **Results**: RNN achieved most consistent performance
 
 ### 🔄 Phase 2: Enhanced ML with Validation (IN PROGRESS)  
 - **Data Augmentation**: TimeGAN, jittering, magnitude warping
