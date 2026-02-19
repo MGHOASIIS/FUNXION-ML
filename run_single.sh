@@ -73,22 +73,23 @@ for i in range(torch.cuda.device_count()):
 # ── Move to project root so relative imports resolve ──────────────────────────
 cd "${PROJECT_ROOT}"
 
-# ── Build python command ───────────────────────────────────────────────────────
 ARGS="--task ${TASK} \
     --paradigm ${PARADIGM} \
     --model ${MODEL} \
-    --method truncate \
+    --method ${METHOD} \
     --patience 15 \
     --min-delta 1e-4 \
     --save-checkpoints"
 
 # Diagnostics for RNN, CNN and Transformer only
 if [ "${MODEL}" != "hmm" ]; then
-    ARGS="${ARGS} --diagnostics "
+    ARGS="${ARGS} --diagnostics"
 fi
 
+# HMM-specific: pass event CSV directory for state-alignment analysis
 if [ "${MODEL}" == "hmm" ]; then
-    ARGS="${ARGS} --hmm-csv-dir data/events/ "
+    ARGS="${ARGS} --hmm-csv-dir data/events/"
+fi
 
 echo ""
 echo "[INFO] Command: conda run -n ${ENV_NAME} python main.py ${ARGS}"

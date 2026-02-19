@@ -1,14 +1,14 @@
 #!/bin/bash
 # =============================================================================
 # submit_all.sh
-# Submits all 72 experiments (6 tasks × 4 paradigms × 3 models) as independent
-# SLURM jobs. Each job runs in parallel — all 72 are queued at once.
+# Submits all 96 experiments (6 tasks × 4 paradigms × 4 models) as independent
+# SLURM jobs. Each job runs in parallel — all are queued at once.
 #
 # Usage:
-#   bash submit_all.sh             # submit all 72
+#   bash submit_all.sh             # submit all 96
 #   bash submit_all.sh --dry-run   # print commands without submitting
 #   bash submit_all.sh --model rnn # submit only RNN jobs (24 jobs)
-#   bash submit_all.sh --task 1    # submit only task 1 jobs (12 jobs)
+#   bash submit_all.sh --task 1    # submit only task 1 jobs (16 jobs)
 #
 # Options:
 #   --dry-run       Print sbatch commands without actually submitting
@@ -17,7 +17,8 @@
 #   --paradigm P    Only submit jobs for one paradigm (1–4)
 # =============================================================================
 
-set -e
+# NOTE: set -e intentionally omitted here — a single failed sbatch submission
+# should not abort the entire loop. Failures are caught and reported per-job.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOB_SCRIPT="${SCRIPT_DIR}/run_single.sh"
@@ -61,6 +62,7 @@ PARADIGM_NAMES=([1]="patients_vs_controls" [2]="rct_vs_controls" [3]="other_vs_c
 
 # ── Submission loop ───────────────────────────────────────────────────────────
 SUBMITTED=0
+FAILED=0
 
 echo "============================================================"
 echo " XDash HPC Job Submission"
@@ -101,63 +103,68 @@ for MODEL in "${MODELS[@]}"; do
                 rnn)
                     TIME_LIMIT="08:00:00"
                     MEMORY="64G"
-                    GPU="--gres=gpu:1"
                     PARTITION="gpu"
                     ;;
                 cnn)
                     TIME_LIMIT="06:00:00"
                     MEMORY="64G"
-                    GPU="--gres=gpu:1"
                     PARTITION="gpu"
                     ;;
                 hmm)
                     TIME_LIMIT="04:00:00"
                     MEMORY="32G"
-                    GPU=""
                     PARTITION="short"
                     ;;
                 transformer)
                     TIME_LIMIT="08:00:00"
                     MEMORY="64G"
-                    GPU="--gres=gpu:1"
                     PARTITION="gpu"
                     ;;
             esac
 
-            SBATCH_CMD="sbatch \
-                --account=a.sathyanarayana \
-                --partition=${PARTITION} \
-                --job-name=${JOB_NAME} \
-                --time=${TIME_LIMIT} \
-                --nodes=1 \
-                --ntasks=1 \
-                --cpus-per-task=8 \
-                --mem=${MEMORY} \
-                ${GPU} \
-                --output=${LOG_DIR}/${JOB_NAME}_%j.out \
-                --error=${LOG_DIR}/${JOB_NAME}_%j.err \
-                --mail-type=FAIL \
-                --mail-user=singh.vishwa@northeastern.edu \
-                ${JOB_SCRIPT} ${TASK} ${PARADIGM} ${MODEL}"
+            # Build sbatch command as an array — safe with spaces and special
+            # characters, avoids the eval word-splitting pitfall.
+            SBATCH_CMD=(sbatch
+                --account=a.sathyanarayana
+                --partition="${PARTITION}"
+                --job-name="${JOB_NAME}"
+                --time="${TIME_LIMIT}"
+                --nodes=1
+                --ntasks=1
+                --cpus-per-task=8
+                --mem="${MEMORY}"
+                --output="${LOG_DIR}/${JOB_NAME}_%j.out"
+                --error="${LOG_DIR}/${JOB_NAME}_%j.err"
+                --mail-type=FAIL
+                --mail-user=singh.vishwa@northeastern.edu
+            )
+
+            # GPU models get a GPU allocation; HMM is CPU-only
+            if [ "${MODEL}" != "hmm" ]; then
+                SBATCH_CMD+=(--gres=gpu:1)
+            fi
+
+            SBATCH_CMD+=("${JOB_SCRIPT}" "${TASK}" "${PARADIGM}" "${MODEL}")
 
             if [ "${DRY_RUN}" = true ]; then
                 echo "[DRY RUN] ${JOB_NAME}"
                 echo "  Task: ${TASK} (${TASK_NAME})"
                 echo "  Paradigm: ${PARADIGM} (${PARADIGM_NAME})"
                 echo "  Model: ${MODEL} | Time: ${TIME_LIMIT} | Memory: ${MEMORY}"
-                echo "  Command: ${SBATCH_CMD}"
+                echo "  Command: ${SBATCH_CMD[*]}"
                 echo ""
                 SUBMITTED=$((SUBMITTED + 1))
             else
                 echo -n "[SUBMITTING] ${JOB_NAME} (${TASK_NAME}, ${PARADIGM_NAME})... "
 
-                if JOB_OUTPUT=$(eval ${SBATCH_CMD} 2>&1); then
-                    JOB_ID=$(echo ${JOB_OUTPUT} | awk '{print $NF}')
+                if JOB_OUTPUT=$("${SBATCH_CMD[@]}" 2>&1); then
+                    JOB_ID=$(echo "${JOB_OUTPUT}" | awk '{print $NF}')
                     echo "✅ Job ID: ${JOB_ID}"
                     SUBMITTED=$((SUBMITTED + 1))
                 else
                     echo "❌ FAILED"
                     echo "  Error: ${JOB_OUTPUT}"
+                    FAILED=$((FAILED + 1))
                 fi
 
                 sleep 0.3
@@ -181,6 +188,9 @@ if [ "${DRY_RUN}" = true ]; then
 else
     echo " SUBMISSION COMPLETE"
     echo " Successfully submitted: ${SUBMITTED} jobs"
+    if [ "${FAILED}" -gt 0 ]; then
+        echo " Failed submissions:     ${FAILED} jobs"
+    fi
     echo ""
     echo " MONITORING:"
     echo "   squeue -u singh.vishwa"
