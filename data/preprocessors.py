@@ -252,7 +252,7 @@ class PreprocessorFactory:
         if model_type.lower() == "cnn":
             output_format = "channels_first"
         else:
-            output_format = "3d"
+            output_format = "3d" # rnn and transformers covered
         
         if method == "truncate":
             return TruncatePreprocessor(output_format=output_format)

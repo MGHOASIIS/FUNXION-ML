@@ -54,7 +54,7 @@ mkdir -p "${LOG_DIR}"
 # ── Define experiment space ───────────────────────────────────────────────────
 TASKS=(1 2 3 4 5 6)
 PARADIGMS=(1 2 3 4)
-MODELS=(hmm cnn rnn)
+MODELS=(hmm cnn rnn transformer)
 
 TASK_NAMES=([1]="jar_opening" [2]="key_turning" [3]="cleaning" [4]="back_washing" [5]="cutting" [6]="hammering")
 PARADIGM_NAMES=([1]="patients_vs_controls" [2]="rct_vs_controls" [3]="other_vs_controls" [4]="rct_vs_other")
@@ -115,6 +115,12 @@ for MODEL in "${MODELS[@]}"; do
                     MEMORY="32G"
                     GPU=""
                     PARTITION="short"
+                    ;;
+                transformer)
+                    TIME_LIMIT="08:00:00"
+                    MEMORY="64G"
+                    GPU="--gres=gpu:1"
+                    PARTITION="gpu"
                     ;;
             esac
 

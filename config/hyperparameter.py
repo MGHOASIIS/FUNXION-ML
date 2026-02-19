@@ -30,6 +30,20 @@ if IS_TEST:
         "pooling":       ["last"],
     }
 
+
+    TRANSFORMER_PARAM_GRID = {
+        "d_model":         [32],
+        "nhead":           [2],
+        "num_layers":      [1],
+        "dim_feedforward": [64],
+        "dropout":         [0.1],
+        "dropout_fc":      [0.2],
+        "lr":              [1e-3],
+        "weight_decay":    [1e-4],
+        "batch_size":      [64],
+        "epochs":          [10],
+    }
+
 else:
     HMM_PARAM_GRID = {
         "covariance_type": ["diag", "full"],
@@ -72,4 +86,18 @@ else:
         "batch_size":    [32, 64],
         # pooling
         "pooling":       ["max", "mean", "last"],
+    }
+
+
+    TRANSFORMER_PARAM_GRID = {
+        "d_model":         [32, 64],
+        "nhead":           [2, 4],       # nhead must divide d_model
+        "num_layers":      [1, 2],
+        "dim_feedforward": [64, 128],
+        "dropout":         [0.1, 0.2],
+        "dropout_fc":      [0.2, 0.4],
+        "lr":              [1e-3, 2e-4],
+        "weight_decay":    [1e-4],
+        "batch_size":      [32, 64],
+        "epochs":          [100],
     }
