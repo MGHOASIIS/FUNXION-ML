@@ -1,9 +1,5 @@
 # XDash: ML Classification of Shoulder Pathology Using XR-Based Motion Capture
 
-[![Python](https://img.shields.io/badge/Python-3.8+-blue)](https://python.org)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange)](https://pytorch.org)
-[![Research](https://img.shields.io/badge/Research-In%20Progress-green)](https://github.com)
-
 > **Machine Learning Classification of Shoulder Pathology Using Extended Reality (XR) Motion Tracking and Deep Learning**
 
 ## 🎯 Project Overview
@@ -73,12 +69,12 @@ X-DASH-Data-Analysis/
 - **Population**: 40 patients (RCT, arthritis, bursitis, tendonitis) + 20 controls
 - **Sensors**: XR headset + 2 controllers (18 features: 3×6-DoF @ 50Hz)
 - **Tasks**: 6 standardized functional assessments
-  1. 🫙 **Jar Opening** - Most discriminative task
-  2. 🔑 **Key Turning** - High performance across models
-  3. 🧽 **Cleaning** - Moderate difficulty
-  4. 🚿 **Back Washing** - Complex movement patterns
-  5. ✂️ **Cutting** - Fine motor control
-  6. 🔨 **Hammering** - Lowest performance (challenging)
+  1. 🫙 **Jar Opening** 
+  2. 🔑 **Key Turning** 
+  3. 🧽 **Cleaning** 
+  4. 🚿 **Back Washing**
+  5. ✂️ **Cutting**
+  6. 🔨 **Hammering**
 
 ### Classification Paradigms
 1. **Patients vs Controls** - Primary diagnostic classification
@@ -160,40 +156,55 @@ squeue -u username
 - **Extensible**: Easy to add new models, tasks, or datasets
 - **Validated**: Comprehensive testing and error handling
 
-## 📊 Key Results (Phase 1)
-
-| Model | Task | Paradigm | Balanced Accuracy | Recall | AUC |
-|-------|------|----------|------------------|--------|-----|
-| RNN   | Jar Opening | Patients vs Controls | 0.84 | 0.95 | 0.89 |
-| CNN   | Key Turning | RCT vs Controls | 0.78 | 0.88 | 0.82 |
-| RNN   | Cleaning | Other vs Controls | 0.72 | 0.79 | 0.76 |
-
-### 🎯 Most Discriminative Features
-1. **Head positions** (X, Y, Z) - Compensatory movements
-2. **Right-hand positions** (X, Y, Z) - Primary movement patterns  
-3. **Right-hand rotations** - Wrist movement quality
-
 ## 🔧 Configuration
 
 ### Model Hyperparameters
 ```python
-# RNN Configuration
-RNN_PARAM_GRID = {
-    "rnn_type": ["gru"],
-    "hidden_size": [32, 64, 128], 
-    "num_layers": [1, 2],
-    "bidirectional": [True, False],
-    "dropout_rnn": [0.2, 0.3],
-    "pooling": ["last", "mean", "max"]
-}
+# HMM Configuration
+HMM_PARAM_GRID = {
+        "covariance_type": ["diag", "full"],
+        "n_components":    [2, 3, 4, 5],
+        "n_iter":          [50, 100],
+    }
 
-# CNN Configuration  
-CNN_PARAM_GRID = {
-    "conv_channels": [[32, 64, 64], [64, 128, 128]],
-    "kernel_sizes": [[7, 5, 3], [5, 5, 5]],
-    "gru_hidden": [64, 128, 256],
-    "dropout_fc": [0.2, 0.4]
-}
+# CNN confiugration
+  CNN_PARAM_GRID = {
+      # CNN trunk
+      "conv_channels": [
+          [32, 64, 64],
+          [64, 128, 128],
+          [64, 128, 256],
+      ],
+      "kernel_sizes": [
+          [7, 5, 3],
+          [5, 5, 5],
+      ],
+      # Regularisation & optimiser
+      "dropout_fc":    [0.2, 0.4],
+      "learning_rate": [1e-3, 2e-4],
+      "weight_decay":  [5e-4],
+      # Training loop
+      "batch_size":    [32, 64],
+      "epochs":        [100],
+  }
+
+# RNN configuration
+  RNN_PARAM_GRID = {
+      # architecture
+      "rnn_type":      ["lstm", "gru"],
+      "hidden_size":   [32, 64, 128],
+      "num_layers":    [1, 2],
+      # regularisation
+      "bidirectional": [True, False],
+      "dropout_rnn":   [0.2],
+      "dropout_fc":    [0.3],
+      # optimisation
+      "lr":            [1e-3],
+      "epochs":        [100],
+      "batch_size":    [32, 64],
+      # pooling
+      "pooling":       ["max", "mean", "last"],
+  }
 ```
 
 ### Reproducibility
@@ -272,7 +283,7 @@ mypy models/ utils/
 
 ## 📧 Contact & Collaboration
 
-**Research Team**: Orthopedic AI Lab, Massachusetts General Brigham
+**Research Team**: Orthopedic Lab, Massachusetts General Brigham
 **Primary Contact**: [Your Name] - [email@institution.edu]
 **Clinical Collaborator**: [Clinical Lead]
 **Technical Lead**: [Your Name]
@@ -281,7 +292,7 @@ mypy models/ utils/
 
 ## 📄 License
 
-This research code is licensed under MIT License. See [LICENSE](LICENSE) for details.
+
 
 ## 🙏 Acknowledgments
 
