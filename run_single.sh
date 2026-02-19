@@ -7,7 +7,7 @@
 # Arguments:
 #   $1  TASK      (1–6)
 #   $2  PARADIGM  (1–4)
-#   $3  MODEL     (hmm | cnn | rnn)
+#   $3  MODEL     (hmm | cnn | rnn | transformer)
 #
 # Usage (manual, for testing):
 #   sbatch --time=06:00:00 run_single.sh 1 1 rnn
@@ -82,10 +82,13 @@ ARGS="--task ${TASK} \
     --min-delta 1e-4 \
     --save-checkpoints"
 
-# Diagnostics for RNN and CNN only
+# Diagnostics for RNN, CNN and Transformer only
 if [ "${MODEL}" != "hmm" ]; then
-    ARGS="${ARGS} --diagnostics"
+    ARGS="${ARGS} --diagnostics "
 fi
+
+if [ "${MODEL}" == "hmm" ]; then
+    ARGS="${ARGS} --hmm-csv-dir data/events/ "
 
 echo ""
 echo "[INFO] Command: conda run -n ${ENV_NAME} python main.py ${ARGS}"

@@ -12,7 +12,7 @@
 #
 # Options:
 #   --dry-run       Print sbatch commands without actually submitting
-#   --model MODEL   Only submit jobs for one model (hmm | cnn | rnn)
+#   --model MODEL   Only submit jobs for one model (hmm | cnn | rnn | transformer)
 #   --task TASK     Only submit jobs for one task (1–6)
 #   --paradigm P    Only submit jobs for one paradigm (1–4)
 # =============================================================================

@@ -47,8 +47,8 @@ if IS_TEST:
 else:
     HMM_PARAM_GRID = {
         "covariance_type": ["diag", "full"],
-        "n_components":    [2, 3, 4, 5],
-        "n_iter":          [50, 100],
+        "n_components":    [2, 3, 4, 5, 6, 7, 8],
+        "n_iter":          [100],
     }
 
     CNN_PARAM_GRID = {
