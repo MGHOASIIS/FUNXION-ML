@@ -26,6 +26,7 @@ from models.hmm_model import HMMModel
 from models.cnn_model import CNNModel
 from models.rnn_model import RNNModel
 from models.transformer_model import TransformerModel
+from training.evaluator import ModelEvaluator, Visualizer
 
 def load_data(task: int):
     """Load patient and control data for given task."""
@@ -200,8 +201,10 @@ def main():
         "--method",
         type=str,
         default="truncate",
-        choices=["truncate", "sliding_window", "padding", "dtw_embedding", "downsample_truncate"],
-        help="Preprocessing method"
+        choices=["truncate", "sliding_window", "padding", "dtw_embedding",
+                 "downsample_truncate", "variable_length"],
+        help="Preprocessing method ('variable_length' recommended for HMM — "
+             "no truncation, each subject keeps their full recording)"
     )
     
     # sliding window arguments
@@ -344,19 +347,17 @@ def main():
     experiment_dir.mkdir(parents=True, exist_ok=True)
     
     # Create subdirectories
-    results_dir = experiment_dir / "results"
-    figures_dir = experiment_dir / "figures"
+    results_dir     = experiment_dir / "results"
+    figures_dir     = experiment_dir / "figures"
     checkpoints_dir = experiment_dir / "model_checkpoints"
-    
-    for dir in [results_dir, figures_dir, checkpoints_dir]:
-        dir.mkdir(exist_ok=True)
-    
-    # Diagnostics directory
+    diagnostics_dir = experiment_dir / "diagnostics"
+
+    for d in [results_dir, figures_dir, checkpoints_dir]:
+        d.mkdir(exist_ok=True)
+
     if args.diagnostics:
         if args.diagnostics_dir:
             diagnostics_dir = Path(args.diagnostics_dir)
-        else:
-            diagnostics_dir = experiment_dir / "diagnostics"
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
     
     # Print configuration
@@ -469,8 +470,6 @@ def main():
     # EVALUATE
     # ========================================================================
     
-    from training.evaluator import ModelEvaluator, Visualizer
-    
     evaluator = ModelEvaluator()
     eval_results = evaluator.evaluate(
         y_true=results.y_true,
@@ -558,7 +557,11 @@ def main():
                 seq_sids.append(str(sid_key))
 
             y_raw   = np.array(seq_labels, dtype=np.int32)
-            all_raw = np.vstack(seqs_raw)
+            # Only stack valid 2D sequences with the expected channel count for scaler fitting
+            valid_seqs = [s for s in seqs_raw if s.ndim == 2 and s.shape[1] == 18]
+            if not valid_seqs:
+                raise ValueError("[HMM Diagnostics] No valid sequences found (expected shape (T, 18)).")
+            all_raw = np.vstack(valid_seqs)
             scaler  = StandardScaler().fit(all_raw)
             seqs_scaled = [scaler.transform(s) for s in seqs_raw]
 
@@ -571,8 +574,11 @@ def main():
                   f"covariance_type={cov_typ}")
 
             # Fit on full dataset for interpretation
+            # Use seqs_scaled (z-scored) — consistent with what train_and_evaluate
+            # used via TruncatePreprocessor. Emission means are interpretable
+            # on the z-score scale (positive = above average, negative = below).
             model.fit_for_analysis(
-                X=seqs_raw, y=y_raw,
+                X=seqs_scaled, y=y_raw,
                 n_components=n_comp,
                 covariance_type=cov_typ,
                 n_iter=n_iter
@@ -630,6 +636,10 @@ def main():
                 print(f"  Emission comparison skipped — {e}")
 
             # Decode + plot state sequence for first patient and first control
+            # Load events from CSV if available for this subject
+            _event_csv = Path(args.hmm_csv_dir) / f"consolidated_task{args.task}.csv" \
+                         if (hasattr(args, "hmm_csv_dir") and args.hmm_csv_dir) else None
+
             for i, (seq_s, sid, lbl) in enumerate(
                 zip(seqs_scaled, seq_sids, y_raw)
             ):
@@ -638,9 +648,23 @@ def main():
                     states, _, _ = model.decode_sequence(
                         seq_s, model.fitted_hmm1, sampling_rate=50
                     )
+                    # Load events for this subject if CSV available
+                    events_for_plot = None
+                    if _event_csv and _event_csv.exists():
+                        try:
+                            events_for_plot = model.load_event_markers(
+                                csv_path=_event_csv,
+                                subject_id=sid,
+                                task_id=args.task,
+                                relative_timestamps=True
+                            )
+                        except Exception as _e:
+                            print(f"    [{sid}] events not loaded: {_e}")
                     model.plot_state_sequence_over_time(
-                        sequence=seq_s, state_sequence=states,
-                        channel_idx=0,
+                        sequence=seq_s,
+                        state_sequence=states,
+                        events=events_for_plot,
+                        sampling_rate=50,
                         title=f"State Seq — {sid} ({group}) T{args.task} P{args.paradigm}",
                         save_path=diagnostics_dir / f"state_seq_{group}_{sid}.png"
                     )
@@ -674,7 +698,7 @@ def main():
             print(f"\n[HMM Diagnostics] Complete — outputs in {diagnostics_dir}")
 
         else:
-            # ── CNN / RNN / Transformer diagnostics ───────────────
+            # ── CNN / RNN / Transformer diagnostics (unchanged) ───────────────
             from utils.comprehensive_monitor import run_complete_monitoring
             import numpy as np
             diagnostic_results = run_complete_monitoring(
@@ -698,10 +722,10 @@ def main():
         'config': config,
         'results': results_dict,
         'evaluation': {
-            'accuracy': eval_results.accuracy,
-            'balanced_accuracy': eval_results.balanced_accuracy,
-            'auc_roc': eval_results.auc_roc,
-            'auc_roc_ci': eval_results.auc_roc_ci
+            'accuracy':           getattr(eval_results, 'accuracy', None),
+            'balanced_accuracy':  getattr(eval_results, 'balanced_accuracy', None),
+            'auc_roc':            getattr(eval_results, 'auc_roc', None),
+            'auc_roc_ci':         getattr(eval_results, 'auc_roc_ci', None),
         }
     }
     
@@ -727,11 +751,11 @@ def main():
     print(f"Recall:           {results.metrics['recall']:.3f}")
     
     if diagnostic_results:
-        print(f"\n🔬 Diagnostics:")
+        print(f"\nðŸ”¬ Diagnostics:")
         print(f"   Overfitting Risk: {diagnostic_results.get('overfitting', {}).get('risk', 'N/A')}")
         print(f"   Saved to:         {diagnostics_dir}")
     
-    print(f"\n📁 All outputs:")
+    print(f"\nðŸ“ All outputs:")
     print(f"   Experiment dir: {experiment_dir}")
     print(f"   Results:       {results_dir}")
     print(f"   Figures:       {figures_dir}")
