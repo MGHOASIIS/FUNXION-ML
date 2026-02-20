@@ -5,16 +5,22 @@
 # SLURM jobs. Each job runs in parallel — all are queued at once.
 #
 # Usage:
-#   bash submit_all.sh             # submit all 96
-#   bash submit_all.sh --dry-run   # print commands without submitting
-#   bash submit_all.sh --model rnn # submit only RNN jobs (24 jobs)
-#   bash submit_all.sh --task 1    # submit only task 1 jobs (16 jobs)
+#   bash submit_all.sh                          # submit all 96 (default methods)
+#   bash submit_all.sh --dry-run                # print commands without submitting
+#   bash submit_all.sh --model rnn              # submit only RNN jobs (24 jobs)
+#   bash submit_all.sh --task 1                 # submit only task 1 jobs (16 jobs)
+#   bash submit_all.sh --method truncate        # override method for all jobs
+#   bash submit_all.sh --model hmm --method truncate  # override for one model
 #
 # Options:
-#   --dry-run       Print sbatch commands without actually submitting
-#   --model MODEL   Only submit jobs for one model (hmm | cnn | rnn | transformer)
-#   --task TASK     Only submit jobs for one task (1–6)
-#   --paradigm P    Only submit jobs for one paradigm (1–4)
+#   --dry-run         Print sbatch commands without actually submitting
+#   --model MODEL     Only submit jobs for one model (hmm | cnn | rnn | transformer)
+#   --task TASK       Only submit jobs for one task (1–6)
+#   --paradigm P      Only submit jobs for one paradigm (1–4)
+#   --method METHOD   Override preprocessing method for all submitted jobs
+#                     (truncate | sliding_window | padding | dtw_embedding |
+#                      downsample_truncate | variable_length)
+#                     Default: model-specific (hmm→variable_length, others→truncate)
 # =============================================================================
 
 # NOTE: set -e intentionally omitted here — a single failed sbatch submission
@@ -30,19 +36,36 @@ DRY_RUN=false
 FILTER_MODEL=""
 FILTER_TASK=""
 FILTER_PARADIGM=""
+OVERRIDE_METHOD=""
+
+VALID_METHODS=(truncate sliding_window padding dtw_embedding downsample_truncate variable_length)
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --dry-run)    DRY_RUN=true;          shift ;;
-        --model)      FILTER_MODEL="$2";     shift 2 ;;
-        --task)       FILTER_TASK="$2";      shift 2 ;;
-        --paradigm)   FILTER_PARADIGM="$2";  shift 2 ;;
+        --dry-run)    DRY_RUN=true;             shift ;;
+        --model)      FILTER_MODEL="$2";        shift 2 ;;
+        --task)       FILTER_TASK="$2";         shift 2 ;;
+        --paradigm)   FILTER_PARADIGM="$2";     shift 2 ;;
+        --method)     OVERRIDE_METHOD="$2";     shift 2 ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: bash submit_all.sh [--dry-run] [--model MODEL] [--task TASK] [--paradigm P]"
+            echo "Usage: bash submit_all.sh [--dry-run] [--model MODEL] [--task TASK] [--paradigm P] [--method METHOD]"
             exit 1 ;;
     esac
 done
+
+# ── Validate --method if provided ─────────────────────────────────────────────
+if [ -n "${OVERRIDE_METHOD}" ]; then
+    VALID=false
+    for m in "${VALID_METHODS[@]}"; do
+        [ "${OVERRIDE_METHOD}" == "${m}" ] && VALID=true && break
+    done
+    if [ "${VALID}" = false ]; then
+        echo "ERROR: Invalid --method '${OVERRIDE_METHOD}'"
+        echo "Valid options: ${VALID_METHODS[*]}"
+        exit 1
+    fi
+fi
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 if [ ! -f "${JOB_SCRIPT}" ]; then
@@ -77,6 +100,7 @@ fi
 [ -n "${FILTER_MODEL}" ]    && echo " Filter: model     = ${FILTER_MODEL}"
 [ -n "${FILTER_TASK}" ]     && echo " Filter: task      = ${FILTER_TASK}"
 [ -n "${FILTER_PARADIGM}" ] && echo " Filter: paradigm  = ${FILTER_PARADIGM}"
+[ -n "${OVERRIDE_METHOD}" ] && echo " Override: method  = ${OVERRIDE_METHOD}"
 echo "============================================================"
 echo ""
 
@@ -98,6 +122,15 @@ for MODEL in "${MODELS[@]}"; do
             JOB_NAME="${MODEL^^}_T${TASK}_P${PARADIGM}"
             TASK_NAME="${TASK_NAMES[$TASK]}"
             PARADIGM_NAME="${PARADIGM_NAMES[$PARADIGM]}"
+
+            # Resolve effective method for logging: override > model default
+            if [ -n "${OVERRIDE_METHOD}" ]; then
+                EFFECTIVE_METHOD="${OVERRIDE_METHOD}"
+            elif [ "${MODEL}" == "hmm" ]; then
+                EFFECTIVE_METHOD="variable_length"
+            else
+                EFFECTIVE_METHOD="truncate"
+            fi
 
             case "${MODEL}" in
                 rnn)
@@ -144,18 +177,24 @@ for MODEL in "${MODELS[@]}"; do
                 SBATCH_CMD+=(--gres=gpu:1)
             fi
 
+            # Positional args to run_single.sh: TASK PARADIGM MODEL [METHOD]
+            # Only pass METHOD if an override was specified — otherwise
+            # run_single.sh applies its own per-model default.
             SBATCH_CMD+=("${JOB_SCRIPT}" "${TASK}" "${PARADIGM}" "${MODEL}")
+            if [ -n "${OVERRIDE_METHOD}" ]; then
+                SBATCH_CMD+=("${OVERRIDE_METHOD}")
+            fi
 
             if [ "${DRY_RUN}" = true ]; then
                 echo "[DRY RUN] ${JOB_NAME}"
                 echo "  Task: ${TASK} (${TASK_NAME})"
                 echo "  Paradigm: ${PARADIGM} (${PARADIGM_NAME})"
-                echo "  Model: ${MODEL} | Time: ${TIME_LIMIT} | Memory: ${MEMORY}"
+                echo "  Model: ${MODEL} | Method: ${EFFECTIVE_METHOD} | Time: ${TIME_LIMIT} | Memory: ${MEMORY}"
                 echo "  Command: ${SBATCH_CMD[*]}"
                 echo ""
                 SUBMITTED=$((SUBMITTED + 1))
             else
-                echo -n "[SUBMITTING] ${JOB_NAME} (${TASK_NAME}, ${PARADIGM_NAME})... "
+                echo -n "[SUBMITTING] ${JOB_NAME} (${TASK_NAME}, ${PARADIGM_NAME}, ${EFFECTIVE_METHOD})... "
 
                 if JOB_OUTPUT=$("${SBATCH_CMD[@]}" 2>&1); then
                     JOB_ID=$(echo "${JOB_OUTPUT}" | awk '{print $NF}')
@@ -185,6 +224,7 @@ if [ "${DRY_RUN}" = true ]; then
     echo " To submit specific subsets:"
     echo "   bash submit_all.sh --model rnn"
     echo "   bash submit_all.sh --task 1 --paradigm 1"
+    echo "   bash submit_all.sh --model hmm --method truncate"
 else
     echo " SUBMISSION COMPLETE"
     echo " Successfully submitted: ${SUBMITTED} jobs"

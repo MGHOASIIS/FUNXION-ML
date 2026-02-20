@@ -8,9 +8,13 @@
 #   $1  TASK      (1–6)
 #   $2  PARADIGM  (1–4)
 #   $3  MODEL     (hmm | cnn | rnn | transformer)
+#   $4  METHOD    (optional — overrides the default for this model)
+#                 (truncate | sliding_window | padding | dtw_embedding |
+#                  downsample_truncate | variable_length)
 #
 # Usage (manual, for testing):
 #   sbatch --time=06:00:00 run_single.sh 1 1 rnn
+#   sbatch --time=06:00:00 run_single.sh 1 1 hmm truncate
 # =============================================================================
 
 # ── Static SBATCH directives (NO executable code between these) ───────────────
@@ -27,10 +31,10 @@
 # Script starts here
 # =============================================================================
 
-# Validate arguments
-if [ "$#" -ne 3 ]; then
-    echo "ERROR: Expected 3 arguments: TASK PARADIGM MODEL"
-    echo "Usage: sbatch run_single.sh <task> <paradigm> <model>"
+# Validate arguments — 3 required, 4th (METHOD) is optional
+if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
+    echo "ERROR: Expected 3 or 4 arguments: TASK PARADIGM MODEL [METHOD]"
+    echo "Usage: sbatch run_single.sh <task> <paradigm> <model> [method]"
     exit 1
 fi
 
@@ -42,11 +46,24 @@ PROJECT_ROOT="/home/singh.vishwa/xdash2"
 ENV_NAME="xdash"
 LOG_DIR="${PROJECT_ROOT}/logs"
 
+# ── Resolve preprocessing method ──────────────────────────────────────────────
+# $4 overrides the default if provided; otherwise use the per-model default:
+#   HMM         → variable_length  (sequences must stay at their natural length)
+#   CNN/RNN/TR  → truncate
+if [ -n "$4" ]; then
+    METHOD="$4"
+elif [ "${MODEL}" == "hmm" ]; then
+    METHOD="variable_length"
+else
+    METHOD="truncate"
+fi
+
 echo "============================================================"
 echo " Job:      ${MODEL^^}_T${TASK}_P${PARADIGM}"
 echo " Task:     ${TASK}"
 echo " Paradigm: ${PARADIGM}"
 echo " Model:    ${MODEL}"
+echo " Method:   ${METHOD}"
 echo " Node:     $(hostname)"
 echo " Start:    $(date)"
 echo "============================================================"
@@ -73,6 +90,7 @@ for i in range(torch.cuda.device_count()):
 # ── Move to project root so relative imports resolve ──────────────────────────
 cd "${PROJECT_ROOT}"
 
+# ── Build python command ───────────────────────────────────────────────────────
 ARGS="--task ${TASK} \
     --paradigm ${PARADIGM} \
     --model ${MODEL} \
