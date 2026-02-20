@@ -544,45 +544,7 @@ def main():
             from sklearn.preprocessing import StandardScaler
             import numpy as np
 
-            # Extract raw variable-length sequences (same as TruncatePreprocessor
-            # but without stacking — HMM methods need a list not a 3D array)
-            seqs_raw = []
-            seq_labels = []
-            seq_sids   = []
-            for sid_key, tensor in {**g1, **g0}.items():
-                arr = tensor.detach().cpu().numpy() if hasattr(tensor, "detach") else np.asarray(tensor)
-                arr = arr[:, 1:] if arr.shape[1] > 18 else arr
-                seqs_raw.append(arr)
-                seq_labels.append(1 if sid_key in g1 else 0)
-                seq_sids.append(str(sid_key))
-
-            y_raw   = np.array(seq_labels, dtype=np.int32)
-            # Only stack valid 2D sequences with the expected channel count for scaler fitting
-            valid_seqs = [s for s in seqs_raw if s.ndim == 2 and s.shape[1] == 18]
-            if not valid_seqs:
-                raise ValueError("[HMM Diagnostics] No valid sequences found (expected shape (T, 18)).")
-            all_raw = np.vstack(valid_seqs)
-            scaler  = StandardScaler().fit(all_raw)
-            seqs_scaled = [scaler.transform(s) for s in seqs_raw]
-
-            best = results.best_params    # from LOO CV — n_components, covariance_type, n_iter
-            n_comp  = best.get("n_components",   2)
-            cov_typ = best.get("covariance_type", "diag")
-            n_iter  = best.get("n_iter",          100)
-
-            print(f"  Using LOO CV best params: n_components={n_comp}, "
-                  f"covariance_type={cov_typ}")
-
-            # Fit on full dataset for interpretation
-            # Use seqs_scaled (z-scored) — consistent with what train_and_evaluate
-            # used via TruncatePreprocessor. Emission means are interpretable
-            # on the z-score scale (positive = above average, negative = below).
-            model.fit_for_analysis(
-                X=seqs_scaled, y=y_raw,
-                n_components=n_comp,
-                covariance_type=cov_typ,
-                n_iter=n_iter
-            )
+            seq_sids = [str(sid).split("_", 2)[-1] for sid in subject_ids]
 
             # Emission distributions
             model.plot_emission_distributions(
@@ -641,9 +603,9 @@ def main():
                          if (hasattr(args, "hmm_csv_dir") and args.hmm_csv_dir) else None
 
             for i, (seq_s, sid, lbl) in enumerate(
-                zip(seqs_scaled, seq_sids, y_raw)
+                zip(X, seq_sids, y)
             ):
-                if i == 0 or (lbl == 0 and all(y_raw[:i] == 1)):
+                if i == 0 or (lbl == 0 and all(y[:i] == 1)):
                     group = "patient" if lbl == 1 else "control"
                     states, _, _ = model.decode_sequence(
                         seq_s, model.fitted_hmm1, sampling_rate=50
@@ -674,7 +636,7 @@ def main():
                 csv_path = Path(args.hmm_csv_dir) / f"consolidated_task{args.task}.csv"
                 if csv_path.exists():
                     model.run_alignment_analysis(
-                        sequences=seqs_scaled,
+                        sequences=X,
                         subject_ids=seq_sids,
                         csv_path=csv_path,
                         task_id=args.task,
@@ -688,8 +650,8 @@ def main():
 
             diagnostic_results = {
                 "hmm_analysis": {
-                    "n_components":          n_comp,
-                    "covariance_type":       cov_typ,
+                    "n_components":          results.best_params.get("n_components", 2),
+                    "covariance_type":       results.best_params.get("covariance_type", "diag"),
                     "param_source":          "loo_cv_best_params",
                     "global_importance":     global_imp,
                     "global_importance_ctrl": global_imp_ctrl,
