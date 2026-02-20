@@ -4,41 +4,38 @@
 # Submits all 96 experiments (6 tasks × 4 paradigms × 4 models) as independent
 # SLURM jobs. Each job runs in parallel — all are queued at once.
 #
+# Per-model defaults (hardcoded in run_single.sh):
+#   HMM         → variable_length, --diagnostics, --save-checkpoints,
+#                 --hmm-csv-dir data/events/
+#   CNN/RNN/TR  → truncate, --diagnostics, --save-checkpoints
+#
 # Usage:
-#   bash submit_all.sh                          # submit all 96 (default methods)
-#   bash submit_all.sh --dry-run                # print commands without submitting
-#   bash submit_all.sh --model rnn              # submit only RNN jobs (24 jobs)
-#   bash submit_all.sh --task 1                 # submit only task 1 jobs (16 jobs)
-#   bash submit_all.sh --method truncate        # override method for all jobs
-#   bash submit_all.sh --model hmm --method truncate  # override for one model
+#   bash submit_all.sh                    # submit all 96
+#   bash submit_all.sh --dry-run          # preview without submitting
+#   bash submit_all.sh --model hmm        # submit only HMM jobs (24 jobs)
+#   bash submit_all.sh --task 1           # submit only task 1 (16 jobs)
+#   bash submit_all.sh --task 1 --paradigm 1 --model hmm   # single job
 #
 # Options:
-#   --dry-run         Print sbatch commands without actually submitting
-#   --model MODEL     Only submit jobs for one model (hmm | cnn | rnn | transformer)
-#   --task TASK       Only submit jobs for one task (1–6)
-#   --paradigm P      Only submit jobs for one paradigm (1–4)
-#   --method METHOD   Override preprocessing method for all submitted jobs
-#                     (truncate | sliding_window | padding | dtw_embedding |
-#                      downsample_truncate | variable_length)
-#                     Default: model-specific (hmm→variable_length, others→truncate)
+#   --dry-run       Print sbatch commands without submitting
+#   --model MODEL   Filter by model (hmm | cnn | rnn | transformer)
+#   --task TASK     Filter by task (1–6)
+#   --paradigm P    Filter by paradigm (1–4)
 # =============================================================================
 
-# NOTE: set -e intentionally omitted here — a single failed sbatch submission
-# should not abort the entire loop. Failures are caught and reported per-job.
+# NOTE: set -e intentionally omitted — a single failed sbatch should not
+# abort the entire loop. Failures are caught and reported per-job.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOB_SCRIPT="${SCRIPT_DIR}/run_single.sh"
 PROJECT_ROOT="/home/singh.vishwa/xdash2"
 LOG_DIR="${PROJECT_ROOT}/logs"
 
-# ── Parse optional filters ────────────────────────────────────────────────────
+# ── Parse arguments ───────────────────────────────────────────────────────────
 DRY_RUN=false
 FILTER_MODEL=""
 FILTER_TASK=""
 FILTER_PARADIGM=""
-OVERRIDE_METHOD=""
-
-VALID_METHODS=(truncate sliding_window padding dtw_embedding downsample_truncate variable_length)
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -46,26 +43,12 @@ while [[ $# -gt 0 ]]; do
         --model)      FILTER_MODEL="$2";        shift 2 ;;
         --task)       FILTER_TASK="$2";         shift 2 ;;
         --paradigm)   FILTER_PARADIGM="$2";     shift 2 ;;
-        --method)     OVERRIDE_METHOD="$2";     shift 2 ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: bash submit_all.sh [--dry-run] [--model MODEL] [--task TASK] [--paradigm P] [--method METHOD]"
+            echo "Usage: bash submit_all.sh [--dry-run] [--model MODEL] [--task TASK] [--paradigm P]"
             exit 1 ;;
     esac
 done
-
-# ── Validate --method if provided ─────────────────────────────────────────────
-if [ -n "${OVERRIDE_METHOD}" ]; then
-    VALID=false
-    for m in "${VALID_METHODS[@]}"; do
-        [ "${OVERRIDE_METHOD}" == "${m}" ] && VALID=true && break
-    done
-    if [ "${VALID}" = false ]; then
-        echo "ERROR: Invalid --method '${OVERRIDE_METHOD}'"
-        echo "Valid options: ${VALID_METHODS[*]}"
-        exit 1
-    fi
-fi
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 if [ ! -f "${JOB_SCRIPT}" ]; then
@@ -97,10 +80,9 @@ if [ "${DRY_RUN}" = true ]; then
 else
     echo " Mode: LIVE SUBMISSION"
 fi
-[ -n "${FILTER_MODEL}" ]    && echo " Filter: model     = ${FILTER_MODEL}"
-[ -n "${FILTER_TASK}" ]     && echo " Filter: task      = ${FILTER_TASK}"
-[ -n "${FILTER_PARADIGM}" ] && echo " Filter: paradigm  = ${FILTER_PARADIGM}"
-[ -n "${OVERRIDE_METHOD}" ] && echo " Override: method  = ${OVERRIDE_METHOD}"
+[ -n "${FILTER_MODEL}" ]    && echo " Filter: model    = ${FILTER_MODEL}"
+[ -n "${FILTER_TASK}" ]     && echo " Filter: task     = ${FILTER_TASK}"
+[ -n "${FILTER_PARADIGM}" ] && echo " Filter: paradigm = ${FILTER_PARADIGM}"
 echo "============================================================"
 echo ""
 
@@ -122,15 +104,6 @@ for MODEL in "${MODELS[@]}"; do
             JOB_NAME="${MODEL^^}_T${TASK}_P${PARADIGM}"
             TASK_NAME="${TASK_NAMES[$TASK]}"
             PARADIGM_NAME="${PARADIGM_NAMES[$PARADIGM]}"
-
-            # Resolve effective method for logging: override > model default
-            if [ -n "${OVERRIDE_METHOD}" ]; then
-                EFFECTIVE_METHOD="${OVERRIDE_METHOD}"
-            elif [ "${MODEL}" == "hmm" ]; then
-                EFFECTIVE_METHOD="variable_length"
-            else
-                EFFECTIVE_METHOD="truncate"
-            fi
 
             case "${MODEL}" in
                 rnn)
@@ -155,8 +128,7 @@ for MODEL in "${MODELS[@]}"; do
                     ;;
             esac
 
-            # Build sbatch command as an array — safe with spaces and special
-            # characters, avoids the eval word-splitting pitfall.
+            # Build sbatch command as an array — safe with spaces/special chars
             SBATCH_CMD=(sbatch
                 --account=a.sathyanarayana
                 --partition="${PARTITION}"
@@ -177,24 +149,18 @@ for MODEL in "${MODELS[@]}"; do
                 SBATCH_CMD+=(--gres=gpu:1)
             fi
 
-            # Positional args to run_single.sh: TASK PARADIGM MODEL [METHOD]
-            # Only pass METHOD if an override was specified — otherwise
-            # run_single.sh applies its own per-model default.
             SBATCH_CMD+=("${JOB_SCRIPT}" "${TASK}" "${PARADIGM}" "${MODEL}")
-            if [ -n "${OVERRIDE_METHOD}" ]; then
-                SBATCH_CMD+=("${OVERRIDE_METHOD}")
-            fi
 
             if [ "${DRY_RUN}" = true ]; then
                 echo "[DRY RUN] ${JOB_NAME}"
                 echo "  Task: ${TASK} (${TASK_NAME})"
                 echo "  Paradigm: ${PARADIGM} (${PARADIGM_NAME})"
-                echo "  Model: ${MODEL} | Method: ${EFFECTIVE_METHOD} | Time: ${TIME_LIMIT} | Memory: ${MEMORY}"
+                echo "  Model: ${MODEL} | Time: ${TIME_LIMIT} | Memory: ${MEMORY}"
                 echo "  Command: ${SBATCH_CMD[*]}"
                 echo ""
                 SUBMITTED=$((SUBMITTED + 1))
             else
-                echo -n "[SUBMITTING] ${JOB_NAME} (${TASK_NAME}, ${PARADIGM_NAME}, ${EFFECTIVE_METHOD})... "
+                echo -n "[SUBMITTING] ${JOB_NAME} (${TASK_NAME}, ${PARADIGM_NAME})... "
 
                 if JOB_OUTPUT=$("${SBATCH_CMD[@]}" 2>&1); then
                     JOB_ID=$(echo "${JOB_OUTPUT}" | awk '{print $NF}')
@@ -222,9 +188,9 @@ if [ "${DRY_RUN}" = true ]; then
     echo "   bash submit_all.sh"
     echo ""
     echo " To submit specific subsets:"
-    echo "   bash submit_all.sh --model rnn"
+    echo "   bash submit_all.sh --model hmm"
     echo "   bash submit_all.sh --task 1 --paradigm 1"
-    echo "   bash submit_all.sh --model hmm --method truncate"
+    echo "   bash submit_all.sh --task 1 --paradigm 1 --model hmm"
 else
     echo " SUBMISSION COMPLETE"
     echo " Successfully submitted: ${SUBMITTED} jobs"
@@ -242,7 +208,7 @@ else
     echo ""
     echo " LOGS:"
     echo "   ls ${LOG_DIR}/"
-    echo "   tail -f ${LOG_DIR}/RNN_T1_P1_*.out"
+    echo "   tail -f ${LOG_DIR}/HMM_T1_P1_*.out"
     echo "   find ${LOG_DIR} -name '*.err' -size +0"
 fi
 echo "============================================================"

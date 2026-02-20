@@ -3,7 +3,7 @@ IS_TEST = False
 if IS_TEST:
     HMM_PARAM_GRID = {
         "covariance_type": ["diag"],
-        "n_components":    [2],
+        "n_components":    [5],
         "n_iter":          [1],
     }
 
