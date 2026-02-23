@@ -17,10 +17,40 @@ class ParadigmSelector:
     
     def __init__(self):
         """Load patient diagnosis information."""
-        self.df_px_info = pd.read_excel(PATIENT_DETAILS, sheet_name='Sheet1', header=1)
+        self.df_px_info = self._load_patient_details()
         self.rotator_cuff_ids = self.df_px_info[
             self.df_px_info['dia_code'] == 1
         ]['id'].tolist()
+
+    @staticmethod
+    def _load_patient_details() -> pd.DataFrame:
+        """
+        Load xdash_px_details.xlsx, auto-detecting the correct header row.
+
+        The xlsx has a notes row above the actual column headers, so the
+        header row index can shift if the file has been modified (e.g. after
+        adding survey response columns with openpyxl). Instead of hardcoding
+        header=1, we probe rows 0–5 until we find the one that contains
+        'dia_code' as a column name.
+        """
+        for header_row in range(6):
+            df = pd.read_excel(
+                PATIENT_DETAILS,
+                sheet_name='Sheet1',
+                header=header_row
+            )
+            if 'dia_code' in df.columns:
+                if header_row != 1:
+                    print(f"[ParadigmSelector] Note: found 'dia_code' at header={header_row} "
+                          f"(expected 1) — xlsx may have been modified.")
+                return df
+
+        # Last resort: return with header=1 and let the caller raise a clear error
+        raise ValueError(
+            f"Could not find 'dia_code' column in any of the first 6 rows of "
+            f"{PATIENT_DETAILS}.\n"
+            f"Please check that the file is the correct xdash_px_details.xlsx."
+        )
     
     def select_paradigm(
         self,

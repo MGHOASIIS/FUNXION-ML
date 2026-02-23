@@ -665,160 +665,7 @@ class HMMModel(BaseModel):
         return self.fitted_hmm0, self.fitted_hmm1
 
     # =========================================================================
-    # SECTION 3 — Model selection: BIC / AIC
-    # =========================================================================
-
-    def select_optimal_n_components(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-        n_range: range = range(2, 8),
-        covariance_type: str = 'diag',
-        n_iter: int = 100,
-        save_path: Optional[Path] = None
-    ) -> Dict[str, list]:
-        """
-        Select the optimal number of hidden states via BIC and AIC.
-
-        Trains separate class-conditional HMMs for each n_components value
-        and scores them independently.  The combined BIC/AIC across both
-        classes is used for model selection.
-
-        BIC penalises complexity more strongly and is recommended for N=60.
-        Lower BIC/AIC = better model.
-
-        Parameters
-        ----------
-        X : np.ndarray
-            Array of (T_i, C) sequences
-        y : np.ndarray
-            Labels
-        n_range : range
-            Candidate numbers of hidden states to evaluate
-        covariance_type : str
-            Covariance type (keep consistent with classification run)
-        n_iter : int
-            EM iterations per model fit
-        save_path : Path, optional
-            If provided, saves the selection plot here
-
-        Returns
-        -------
-        results : dict
-            Keys: 'n_components', 'bic_class0', 'bic_class1', 'bic_total',
-                  'aic_class0', 'aic_class1', 'aic_total', 'log_ll_class0',
-                  'log_ll_class1', 'optimal_bic', 'optimal_aic'
-        """
-        seqs_0 = [X[i] for i in range(len(X)) if y[i] == 0]
-        seqs_1 = [X[i] for i in range(len(X)) if y[i] == 1]
-        n_features = X[0].shape[1]
-
-        results: Dict[str, list] = {
-            'n_components': [],
-            'bic_class0': [], 'bic_class1': [], 'bic_total': [],
-            'aic_class0': [], 'aic_class1': [], 'aic_total': [],
-            'log_ll_class0': [], 'log_ll_class1': [],
-        }
-
-        print(f"\n[HMM] Model selection: evaluating n_components = {list(n_range)}")
-        print(f"  covariance_type = {covariance_type}")
-
-        for n in n_range:
-            h0 = self._fit_hmm(seqs_0, n, covariance_type, n_iter)
-            h1 = self._fit_hmm(seqs_1, n, covariance_type, n_iter)
-
-            # Stack each class for scoring
-            X0 = np.vstack(seqs_0)
-            X1 = np.vstack(seqs_1)
-            len0 = [s.shape[0] for s in seqs_0]
-            len1 = [s.shape[0] for s in seqs_1]
-
-            ll0 = h0.score(X0, lengths=len0)
-            ll1 = h1.score(X1, lengths=len1)
-
-            # Free parameters per class (diag covariance)
-            # Transition matrix: n*(n-1), initial probs: n-1,
-            # means: n*d, diag variances: n*d
-            n_params = (n * (n - 1)) + (n - 1) + 2 * (n * n_features)
-
-            n0 = X0.shape[0]
-            n1 = X1.shape[0]
-
-            bic0 = -2 * ll0 * n0 + n_params * np.log(n0)
-            bic1 = -2 * ll1 * n1 + n_params * np.log(n1)
-            aic0 = -2 * ll0 * n0 + 2 * n_params
-            aic1 = -2 * ll1 * n1 + 2 * n_params
-
-            results['n_components'].append(n)
-            results['log_ll_class0'].append(ll0)
-            results['log_ll_class1'].append(ll1)
-            results['bic_class0'].append(bic0)
-            results['bic_class1'].append(bic1)
-            results['bic_total'].append(bic0 + bic1)
-            results['aic_class0'].append(aic0)
-            results['aic_class1'].append(aic1)
-            results['aic_total'].append(aic0 + aic1)
-
-            print(f"  n={n}: BIC_total={bic0+bic1:.1f}  AIC_total={aic0+aic1:.1f}")
-
-        # Identify optima
-        opt_bic = results['n_components'][int(np.argmin(results['bic_total']))]
-        opt_aic = results['n_components'][int(np.argmin(results['aic_total']))]
-        results['optimal_bic'] = opt_bic
-        results['optimal_aic'] = opt_aic
-
-        print(f"\n  ✓ Optimal n_components by BIC: {opt_bic}")
-        print(f"  ✓ Optimal n_components by AIC: {opt_aic}")
-
-        # Plot
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-
-        ax = axes[0]
-        ax.plot(results['n_components'], results['log_ll_class0'],
-                'o-', label='Class 0 (controls)', linewidth=2)
-        ax.plot(results['n_components'], results['log_ll_class1'],
-                's-', label='Class 1 (patients)', linewidth=2)
-        ax.set_xlabel('Number of Hidden States')
-        ax.set_ylabel('Log-Likelihood (higher = better)')
-        ax.set_title('Log-Likelihood per Class')
-        ax.legend()
-        ax.grid(alpha=0.3)
-
-        ax = axes[1]
-        ax.plot(results['n_components'], results['bic_total'],
-                'o-', color='crimson', linewidth=2, label='BIC total')
-        ax.axvline(opt_bic, color='crimson', linestyle='--',
-                   label=f'Optimal BIC: {opt_bic}')
-        ax.set_xlabel('Number of Hidden States')
-        ax.set_ylabel('BIC (lower = better)')
-        ax.set_title('BIC — Model Selection')
-        ax.legend()
-        ax.grid(alpha=0.3)
-
-        ax = axes[2]
-        ax.plot(results['n_components'], results['aic_total'],
-                'o-', color='steelblue', linewidth=2, label='AIC total')
-        ax.axvline(opt_aic, color='steelblue', linestyle='--',
-                   label=f'Optimal AIC: {opt_aic}')
-        ax.set_xlabel('Number of Hidden States')
-        ax.set_ylabel('AIC (lower = better)')
-        ax.set_title('AIC — Model Selection')
-        ax.legend()
-        ax.grid(alpha=0.3)
-
-        plt.suptitle('HMM Model Selection: Optimal Number of Hidden States',
-                     fontsize=13)
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"  [Saved] {save_path}")
-        plt.close()
-
-        return results
-
-    # =========================================================================
-    # SECTION 4 — State decoding and temporal segmentation
+    # SECTION 3 — State decoding and temporal segmentation
     # =========================================================================
 
     def decode_sequence(
@@ -916,7 +763,7 @@ class HMMModel(BaseModel):
         return segments
 
     # =========================================================================
-    # SECTION 5 — CSV event marker loading and alignment
+    # SECTION 4 — CSV event marker loading and alignment
     # =========================================================================
 
     # CSV schema (one file per task):
@@ -1314,7 +1161,7 @@ class HMMModel(BaseModel):
 
 
     # =========================================================================
-    # SECTION 6 — Emission distribution visualization
+    # SECTION 5 — Emission distribution visualization
     # =========================================================================
 
     def plot_emission_distributions(
@@ -1772,7 +1619,7 @@ class HMMModel(BaseModel):
         print("="*70 + "\n")
 
     # =========================================================================
-    # SECTION 7 — State-specific and patient-vs-control feature importance
+    # SECTION 6 — State-specific and patient-vs-control feature importance
     # =========================================================================
 
     def compute_state_specific_importance(

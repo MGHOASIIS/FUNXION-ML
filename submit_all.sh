@@ -117,7 +117,7 @@ for MODEL in "${MODELS[@]}"; do
                     PARTITION="gpu"
                     ;;
                 hmm)
-                    TIME_LIMIT="04:00:00"
+                    TIME_LIMIT="16:00:00"
                     MEMORY="32G"
                     PARTITION="short"
                     ;;
