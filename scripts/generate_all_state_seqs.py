@@ -322,13 +322,11 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
             save_path=save_path,
         )
 
-        # Stats
-        n_trans   = sum(1 for j in range(1, len(states)) if states[j] != states[j-1])
-        total_s   = len(states) / sampling_rate
-        s0_pct    = (states == 0).mean() * 100
-        s1_pct    = (states == 1).mean() * 100
+        # Stats — dynamically handle any n_components (2, 3, 4 ...)
+        n_trans = sum(1 for j in range(1, len(states)) if states[j] != states[j-1])
+        total_s = len(states) / sampling_rate
 
-        summary_rows.append({
+        row = {
             "task":          task,
             "paradigm":      paradigm,
             "subject_id":    clean_sid,
@@ -336,12 +334,17 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
             "n_frames":      len(states),
             "total_s":       round(total_s, 1),
             "n_transitions": n_trans,
-            "state0_pct":    round(s0_pct, 1),
-            "state1_pct":    round(s1_pct, 1),
-        })
+        }
+        # Write stateN_pct for every state 0 .. n_components-1
+        n_components = hp["n_components"]
+        state_pct_str = []
+        for s_idx in range(n_components):
+            pct = round((states == s_idx).mean() * 100, 1)
+            row[f"state{s_idx}_pct"] = pct
+            state_pct_str.append(f"S{s_idx}={pct:.0f}%")
 
-        print(f"✓  {total_s:.0f}s | {n_trans} trans | "
-              f"S0={s0_pct:.0f}% S1={s1_pct:.0f}%")
+        summary_rows.append(row)
+        print(f"✓  {total_s:.0f}s | {n_trans} trans | {' '.join(state_pct_str)}")
 
     # Summary CSV
     df = pd.DataFrame(summary_rows)
@@ -352,7 +355,9 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
     df_sorted.to_csv(out_dir / "summary.csv", index=False)
 
     # Group stats
-    stats = df.groupby("group")[["total_s", "n_transitions", "state0_pct"]].mean().round(1)
+    # Build stats with all available stateN_pct columns
+    state_pct_cols = sorted([c for c in df.columns if c.startswith("state") and c.endswith("_pct")])
+    stats = df.groupby("group")[["total_s", "n_transitions"] + state_pct_cols].mean().round(1)
     print(f"\n  Group means:\n{stats.to_string()}")
 
     return {

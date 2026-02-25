@@ -117,7 +117,7 @@ for MODEL in "${MODELS[@]}"; do
                     PARTITION="gpu"
                     ;;
                 hmm)
-                    TIME_LIMIT="16:00:00"
+                    TIME_LIMIT="32:00:00"
                     MEMORY="32G"
                     PARTITION="short"
                     ;;
@@ -125,6 +125,7 @@ for MODEL in "${MODELS[@]}"; do
                     TIME_LIMIT="08:00:00"
                     MEMORY="64G"
                     PARTITION="gpu"
+                    GRES="gpu:h200"
                     ;;
             esac
 
