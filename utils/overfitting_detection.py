@@ -71,7 +71,7 @@ class OverfittingDetector:
         For PyTorch models (CNN, RNN, Transformer) this uses the standard
         .parameters() approach. For non-PyTorch models (HMM) _create_temp_model()
         returns a GaussianHMM which has no .parameters(), so we return 0 and
-        skip the complexity ratio — it isn't meaningful for generative models.
+        skip the complexity ratio â€” it isn't meaningful for generative models.
         """
         temp_model = model._create_temp_model()
         if temp_model is None:
@@ -81,7 +81,7 @@ class OverfittingDetector:
             n_params = sum(p.numel() for p in temp_model.parameters())
             del temp_model
             return n_params
-        # Non-PyTorch model (e.g. GaussianHMM) — parameter count not applicable
+        # Non-PyTorch model (e.g. GaussianHMM) â€” parameter count not applicable
         return 0
     
     def analyze(
@@ -144,7 +144,7 @@ class OverfittingDetector:
             # Use val_acc only; generalization gap is computed from val alone.
             train_scores = None
             val_scores = np.array([r['val_acc'] for r in fold_results], dtype=float)
-            metric_type = "ACCURACY (val only — generative model)"
+            metric_type = "ACCURACY (val only â€” generative model)"
             are_losses = False
         elif 'train_score' in fold_results[0] and 'val_score' in fold_results[0]:
             # Generic 'score' fields - detect if loss or accuracy
@@ -163,22 +163,22 @@ class OverfittingDetector:
         if are_losses:
             # LOSSES: lower is better, so val > train means overfitting
             generalization_gap = float(np.mean(val_scores) - np.mean(train_scores))
-            print(f"   Train {metric_type} (mean): {np.mean(train_scores):.4f} ± {np.std(train_scores):.4f}")
-            print(f"   Val {metric_type} (mean):   {np.mean(val_scores):.4f} ± {np.std(val_scores):.4f}")
+            print(f"   Train {metric_type} (mean): {np.mean(train_scores):.4f} Â± {np.std(train_scores):.4f}")
+            print(f"   Val {metric_type} (mean):   {np.mean(val_scores):.4f} Â± {np.std(val_scores):.4f}")
             print(f"   Gap (val - train):  {generalization_gap:.4f}")
             print(f"   (Positive gap = validation worse = overfitting)")
         elif train_scores is not None:
             # ACCURACIES with both train and val: higher is better, so train > val means overfitting
             generalization_gap = float(np.mean(train_scores) - np.mean(val_scores))
-            print(f"   Train {metric_type} (mean): {np.mean(train_scores):.4f} ± {np.std(train_scores):.4f}")
-            print(f"   Val {metric_type} (mean):   {np.mean(val_scores):.4f} ± {np.std(val_scores):.4f}")
+            print(f"   Train {metric_type} (mean): {np.mean(train_scores):.4f} Â± {np.std(train_scores):.4f}")
+            print(f"   Val {metric_type} (mean):   {np.mean(val_scores):.4f} Â± {np.std(val_scores):.4f}")
             print(f"   Gap (train - val):  {generalization_gap:.4f}")
             print(f"   (Positive gap = validation worse = overfitting)")
         else:
             # Val-only path (HMM): no train score to compare against
             generalization_gap = 0.0
-            print(f"   Val {metric_type} (mean):   {np.mean(val_scores):.4f} ± {np.std(val_scores):.4f}")
-            print(f"   Gap:                N/A (generative model — no training score)")
+            print(f"   Val {metric_type} (mean):   {np.mean(val_scores):.4f} Â± {np.std(val_scores):.4f}")
+            print(f"   Gap:                N/A (generative model â€” no training score)")
             print(f"   (Generalization gap requires a discriminative training objective)")
         
         gap_significance = self._classify_gap(abs(generalization_gap))
@@ -190,9 +190,9 @@ class OverfittingDetector:
 
         print(f"\n2. MODEL COMPLEXITY ANALYSIS")
         if model_capacity == 0:
-            # Non-PyTorch model (e.g. HMM) — skip ratio analysis
+            # Non-PyTorch model (e.g. HMM) â€” skip ratio analysis
             sample_to_param_ratio = float('inf')
-            complexity_warning = "N/A (generative model — parameter count not applicable)"
+            complexity_warning = "N/A (generative model â€” parameter count not applicable)"
             print(f"   Parameters:         N/A")
             print(f"   Samples:            {n_samples}")
             print(f"   Sample/Param Ratio: N/A")
@@ -203,7 +203,7 @@ class OverfittingDetector:
             print(f"   Parameters:         {model_capacity:,}")
             print(f"   Samples:            {n_samples}")
             print(f"   Sample/Param Ratio: {sample_to_param_ratio:.4f} ({complexity_warning})")
-            print(f"   ⚠️  Rule of Thumb: Ratio > 10 is safe for small datasets")
+            print(f"   âš ï¸  Rule of Thumb: Ratio > 10 is safe for small datasets")
         
         # 3. Prediction confidence analysis
         print(f"\n3. PREDICTION CONFIDENCE ANALYSIS")
@@ -220,15 +220,15 @@ class OverfittingDetector:
                 mean_val_conf = np.mean(val_confs)
                 std_val_conf = np.std(val_confs)
                 
-                print(f"   Val Confidence:     {mean_val_conf:.4f} ± {std_val_conf:.4f}")
+                print(f"   Val Confidence:     {mean_val_conf:.4f} Â± {std_val_conf:.4f}")
                 print(f"   (Mean prediction probability)")
                 
                 if mean_val_conf < 0.55:
-                    print(f"   ⚠️  LOW confidence - model very uncertain")
+                    print(f"   âš ï¸  LOW confidence - model very uncertain")
                 elif mean_val_conf > 0.85:
-                    print(f"   ⚠️  HIGH confidence - possible overconfidence")
+                    print(f"   âš ï¸  HIGH confidence - possible overconfidence")
                 else:
-                    print(f"   ✓ Moderate confidence (reasonable)")
+                    print(f"   âœ“ Moderate confidence (reasonable)")
                 
                 # Check for train_conf (optional)
                 if 'train_conf' in fold_results[0]:
@@ -240,7 +240,7 @@ class OverfittingDetector:
                     print(f"   Confidence Gap:     {confidence_gap:.4f}")
                     
                     if confidence_gap > 0.15:
-                        print(f"   🚨 Large gap - model overconfident on training")
+                        print(f"   ðŸš¨ Large gap - model overconfident on training")
                 else:
                     print(f"   Train Confidence:   Not tracked")
                     print(f"   (Train confidence requires predictions on training set)")
@@ -255,7 +255,7 @@ class OverfittingDetector:
             train_val_corr = self._compute_train_val_correlation(fold_results)
             print(f"\n4. TRAIN-VAL CORRELATION")
             print(f"   Correlation:        {train_val_corr:.4f}")
-            print(f"   ⚠️  Low correlation suggests overfitting")
+            print(f"   âš ï¸  Low correlation suggests overfitting")
         else:
             train_val_corr = None
         
@@ -327,13 +327,13 @@ class OverfittingDetector:
         gates = 3 if rnn_type == 'gru' else 4  # GRU has 3 gates, LSTM has 4
         directions = 2 if bidirectional else 1
         
-        # First layer: input_dim → hidden_size
+        # First layer: input_dim â†’ hidden_size
         params_l0 = (gates * hidden_size * input_dim +      # weight_ih
                      gates * hidden_size * hidden_size +    # weight_hh
                      2 * gates * hidden_size)               # biases (ih and hh)
         params_l0 *= directions
         
-        # Additional layers: hidden → hidden
+        # Additional layers: hidden â†’ hidden
         params_additional = 0
         for layer in range(1, num_layers):
             params_layer = (gates * hidden_size * (hidden_size * directions) +  # weight_ih
@@ -342,7 +342,7 @@ class OverfittingDetector:
             params_layer *= directions
             params_additional += params_layer
         
-        # Classifier: hidden → 2 classes
+        # Classifier: hidden â†’ 2 classes
         classifier_input = hidden_size * directions
         params_classifier = classifier_input * 2 + 2  # weights + biases
         
@@ -425,7 +425,7 @@ class OverfittingDetector:
         recommendations = []
         
         if risk == "HIGH":
-            recommendations.append("🚨 CRITICAL: Model shows strong signs of overfitting")
+            recommendations.append("ðŸš¨ CRITICAL: Model shows strong signs of overfitting")
             
             if gap > 0.15:
                 recommendations.append("Increase regularization (dropout, weight decay)")
@@ -439,7 +439,7 @@ class OverfittingDetector:
             recommendations.append("Consider traditional ML (XGBoost) instead of DL")
         
         elif risk == "MEDIUM":
-            recommendations.append("⚠️  MODERATE: Monitor overfitting carefully")
+            recommendations.append("âš ï¸  MODERATE: Monitor overfitting carefully")
             
             if gap > 0.08:
                 recommendations.append("Consider increasing dropout rate")
@@ -450,7 +450,7 @@ class OverfittingDetector:
             recommendations.append("Use early stopping with validation set")
         
         else:
-            recommendations.append("✓ GOOD: Model appears to generalize well")
+            recommendations.append("âœ“ GOOD: Model appears to generalize well")
             recommendations.append("Continue with current approach")
             recommendations.append("Consider slightly increasing model capacity if underfitting")
         
@@ -614,29 +614,29 @@ class LearningCurveAnalyzer:
         
         # Check for overfitting
         if final_gap > 0.15:
-            interpretations.append("🚨 OVERFITTING:")
+            interpretations.append("ðŸš¨ OVERFITTING:")
             interpretations.append("  Large train-val gap")
-            interpretations.append("  → Increase regularization")
+            interpretations.append("  â†’ Increase regularization")
         elif final_gap > 0.08:
-            interpretations.append("⚠️  MILD OVERFITTING:")
+            interpretations.append("âš ï¸  MILD OVERFITTING:")
             interpretations.append("  Moderate train-val gap")
-            interpretations.append("  → Monitor carefully")
+            interpretations.append("  â†’ Monitor carefully")
         
         # Check for underfitting
         if final_val < 0.65:
-            interpretations.append("🚨 UNDERFITTING:")
+            interpretations.append("ðŸš¨ UNDERFITTING:")
             interpretations.append("  Low validation score")
-            interpretations.append("  → Increase model capacity")
+            interpretations.append("  â†’ Increase model capacity")
         
         # Check convergence
         if len(train_scores) > 3:
             late_improvement = val_scores[-1] - val_scores[-3]
             if late_improvement > 0.02:
-                interpretations.append("✓ STILL IMPROVING:")
-                interpretations.append("  → Try more data/epochs")
+                interpretations.append("âœ“ STILL IMPROVING:")
+                interpretations.append("  â†’ Try more data/epochs")
         
         if not interpretations:
-            interpretations.append("✓ GOOD GENERALIZATION")
+            interpretations.append("âœ“ GOOD GENERALIZATION")
         
         return interpretations
 
@@ -646,8 +646,8 @@ class BiasVarianceAnalyzer:
     Bias-variance decomposition for understanding model errors.
     
     Critical for small datasets to understand if errors come from:
-    - High bias (underfitting) → model too simple
-    - High variance (overfitting) → model too complex
+    - High bias (underfitting) â†’ model too simple
+    - High variance (overfitting) â†’ model too complex
     """
     
     @staticmethod
@@ -688,19 +688,19 @@ class BiasVarianceAnalyzer:
         print(f"\n{'='*70}")
         print("BIAS-VARIANCE DECOMPOSITION")
         print(f"{'='*70}")
-        print(f"Bias²:           {bias_squared:.4f}")
+        print(f"BiasÂ²:           {bias_squared:.4f}")
         print(f"Variance:        {variance:.4f}")
         print(f"Total Error:     {total_error:.4f}")
         print(f"\nError Breakdown:")
-        print(f"  Bias²:         {100*bias_squared/total_error:.1f}%")
+        print(f"  BiasÂ²:         {100*bias_squared/total_error:.1f}%")
         print(f"  Variance:      {100*variance/total_error:.1f}%")
         
         if bias_squared > variance:
-            print(f"\n⚠️  HIGH BIAS (Underfitting)")
-            print("   → Model too simple, increase capacity")
+            print(f"\nâš ï¸  HIGH BIAS (Underfitting)")
+            print("   â†’ Model too simple, increase capacity")
         else:
-            print(f"\n⚠️  HIGH VARIANCE (Overfitting)")
-            print("   → Model too complex, add regularization")
+            print(f"\nâš ï¸  HIGH VARIANCE (Overfitting)")
+            print("   â†’ Model too complex, add regularization")
         
         print(f"{'='*70}\n")
         
@@ -769,16 +769,16 @@ class PerFoldAnalyzer:
         # High variance suggests issues
         std_val = np.std(val_scores)
         if std_val > 0.5:
-            print(f"\n🚨 VERY HIGH VARIANCE across folds")
-            print("   → Model extremely unstable or data quality issues")
+            print(f"\nðŸš¨ VERY HIGH VARIANCE across folds")
+            print("   â†’ Model extremely unstable or data quality issues")
         elif std_val > 0.15:
-            print(f"\n🚨 HIGH VARIANCE across folds")
-            print("   → Model unstable, likely overfitting or data issues")
+            print(f"\nðŸš¨ HIGH VARIANCE across folds")
+            print("   â†’ Model unstable, likely overfitting or data issues")
         elif std_val > 0.08:
-            print(f"\n⚠️  MODERATE VARIANCE across folds")
-            print("   → Monitor stability")
+            print(f"\nâš ï¸  MODERATE VARIANCE across folds")
+            print("   â†’ Monitor stability")
         else:
-            print(f"\n✓ CONSISTENT performance across folds")
+            print(f"\nâœ“ CONSISTENT performance across folds")
         
         # Identify outlier folds
         mean_val = np.mean(val_scores)
@@ -798,11 +798,11 @@ class PerFoldAnalyzer:
                 outliers.append((subject, score, fold.get('fold', i)))
         
         if outliers:
-            print(f"\nOutlier Folds (>2 std from mean, {metric_type} = {mean_val:.3f} ± {std_val:.3f}):")
+            print(f"\nOutlier Folds (>2 std from mean, {metric_type} = {mean_val:.3f} Â± {std_val:.3f}):")
             for subject, score, fold_idx in sorted(outliers, key=lambda x: abs(x[1] - mean_val), reverse=True):
                 deviation = abs(score - mean_val) / std_val
-                print(f"  Fold {fold_idx:2d} ({subject}): {score:.4f} ({deviation:.1f}σ)")
-            print(f"   → These {len(outliers)} subjects are edge cases - investigate clinically")
+                print(f"  Fold {fold_idx:2d} ({subject}): {score:.4f} ({deviation:.1f}Ïƒ)")
+            print(f"   â†’ These {len(outliers)} subjects are edge cases - investigate clinically")
         
         print(f"{'='*70}\n")
     
@@ -812,7 +812,7 @@ class PerFoldAnalyzer:
         subject_ids: Optional[List[str]] = None,
         save_path: Optional[str] = None
     ):
-        """Plot scores for each fold."""
+        """Plot scores for each fold with subject IDs on x-axis."""
         # Extract scores based on available keys.
         # Guard against None values (e.g. HMM sets train_loss/train_acc to None).
         if 'train_loss' in fold_results[0] and fold_results[0]['train_loss'] is not None:
@@ -831,39 +831,80 @@ class PerFoldAnalyzer:
             train_scores = [r.get('train_score', 0) for r in fold_results]
             val_scores = [r.get('val_score', 0) for r in fold_results]
             metric_label = "Score"
-        
-        fig, ax = plt.subplots(figsize=(14, 6))
+
+        # Build x-axis labels from test_subjects stored in fold_results.
+        # Priority: (1) test_subjects field in fold dict, (2) subject_ids arg, (3) fold index.
+        x_labels = []
+        for i, r in enumerate(fold_results):
+            if 'test_subjects' in r and r['test_subjects']:
+                # test_subjects is a list — take first entry and strip the
+                # "g0_N_" / "g1_N_" prefix to keep just the raw subject key
+                raw = str(r['test_subjects'][0])
+                # Format is "g0_2_fx03" or "g1_0_px01" — keep last part
+                parts = raw.split('_', 2)
+                label = parts[2] if len(parts) == 3 else raw
+            elif subject_ids and i < len(subject_ids):
+                raw = str(subject_ids[i])
+                parts = raw.split('_', 2)
+                label = parts[2] if len(parts) == 3 else raw
+            else:
+                label = str(i)
+            x_labels.append(label)
 
         x = np.arange(len(fold_results))
 
+        # Wider figure to accommodate rotated labels
+        fig, ax = plt.subplots(figsize=(max(18, len(fold_results) * 0.35), 6))
+
         if train_scores is not None:
-            ax.plot(x, train_scores, 'o-', label=f'Train {metric_label}', alpha=0.6, markersize=4)
+            ax.plot(x, train_scores, 'o-', label=f'Train {metric_label}',
+                    alpha=0.6, markersize=4)
             ax.axhline(np.mean(train_scores), color='blue', linestyle='--',
                        alpha=0.5, label=f'Mean Train ({np.mean(train_scores):.3f})')
-        ax.plot(x, val_scores, 's-', label=f'Val {metric_label}', alpha=0.8, markersize=5)
 
-        # Add mean lines
-        ax.axhline(np.mean(val_scores), color='red', linestyle='--',
-                   alpha=0.5, label=f'Mean Val ({np.mean(val_scores):.3f})')
-        
-        # Shade standard deviation
-        ax.fill_between(x, 
-                        np.mean(val_scores) - np.std(val_scores),
-                        np.mean(val_scores) + np.std(val_scores),
-                        alpha=0.2, color='red')
-        
-        ax.set_xlabel('Fold Index (Subject)')
-        ax.set_ylabel(metric_label)
-        ax.set_title(f'Per-Fold {metric_label} Analysis')
-        ax.legend(loc='best')
+        ax.plot(x, val_scores, 's-', label=f'Val {metric_label}',
+                alpha=0.8, markersize=5)
+
+        # Mean and std band
+        mean_val = np.mean(val_scores)
+        std_val  = np.std(val_scores)
+        ax.axhline(mean_val, color='red', linestyle='--',
+                   alpha=0.5, label=f'Mean Val ({mean_val:.3f})')
+        ax.fill_between(x,
+                        mean_val - std_val,
+                        mean_val + std_val,
+                        alpha=0.2, color='red',
+                        label=f'+/- 1 std ({std_val:.3f})')
+
+        # Highlight outlier folds (> 2 std from mean)
+        for i, score in enumerate(val_scores):
+            if abs(score - mean_val) > 2 * std_val:
+                ax.axvline(x=i, color='orange', linestyle=':', alpha=0.6, linewidth=1.2)
+                ax.annotate(
+                    f'{score:.2f}',
+                    xy=(i, score),
+                    xytext=(0, 8),
+                    textcoords='offset points',
+                    ha='center',
+                    fontsize=7,
+                    color='darkorange'
+                )
+
+        # X-axis: subject ID labels
+        ax.set_xticks(x)
+        ax.set_xticklabels(x_labels, rotation=90, fontsize=7, ha='center')
+        ax.set_xlabel('Subject (held-out fold)', fontsize=11)
+        ax.set_ylabel(metric_label, fontsize=11)
+        ax.set_title(f'Per-Fold {metric_label} Analysis — by Subject ID', fontsize=13)
+        ax.legend(loc='upper right', fontsize=9)
         ax.grid(True, alpha=0.3)
-        
+
         plt.tight_layout()
-        
+
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             print(f"[Saved] {save_path}")
-        
+
         plt.show()
 
 
