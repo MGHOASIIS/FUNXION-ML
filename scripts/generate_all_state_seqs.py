@@ -1,5 +1,5 @@
 """
-generate_all_state_seqs_batch.py
+generate_all_state_seqs.py
 ================================
 Generates HMM state sequence plots for every subject across all
 task × paradigm combinations (T1–T6 × P1–P4 = up to 24 experiments).
@@ -28,19 +28,19 @@ Checkpoint discovery:
 
 Usage (from project root):
     # All tasks and paradigms
-    python scripts/generate_all_state_seqs_batch.py
+    python scripts/generate_all_state_seqs.py
 
     # Specific task only
-    python scripts/generate_all_state_seqs_batch.py --tasks 1 2
+    python scripts/generate_all_state_seqs.py --tasks 1 2
 
     # Specific paradigm only
-    python scripts/generate_all_state_seqs_batch.py --paradigms 1
+    python scripts/generate_all_state_seqs.py --paradigms 1
 
     # Custom checkpoint root
-    python scripts/generate_all_state_seqs_batch.py --hmm-dir experiments/
+    python scripts/generate_all_state_seqs.py --hmm-dir experiments/
 
     # With event CSV overlay
-    python scripts/generate_all_state_seqs_batch.py --csv-dir data/events/
+    python scripts/generate_all_state_seqs.py --csv-dir data/events/
 """
 import argparse
 import glob
