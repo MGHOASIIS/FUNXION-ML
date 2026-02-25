@@ -192,37 +192,141 @@ class ComprehensiveModelMonitor:
         )
         
         # ================================================================
-        # 3. BIAS-VARIANCE DECOMPOSITION
+        # ================================================================
+        # 3. PREDICTION CONFIDENCE ANALYSIS
         # ================================================================
         print(f"\n{'='*70}")
-        print("SECTION 3: BIAS-VARIANCE ANALYSIS")
+        print("SECTION 3: PREDICTION CONFIDENCE ANALYSIS")
         print(f"{'='*70}\n")
-        
-        if fold_results and 'y_pred' in fold_results[0]:
-            # Extract from your actual structure
-            all_preds = []
-            all_probs = []
-            
+
+        if fold_results and 'y_pred' in fold_results[0] and 'y_proba' in fold_results[0]:
+
+            # Collect per-subject data from fold results
+            records = []
             for r in fold_results:
-                if 'y_pred' in r: all_preds.extend(r['y_pred'])
-                if 'y_proba' in r: all_probs.extend(r['y_proba'])
-            
-            if all_probs:
-                prob_variance = np.var(all_probs)
-                mean_prob = np.mean(all_probs)
-                
-                print(f"Probability variance: {prob_variance:.4f}")
-                print(f"Mean probability: {mean_prob:.4f}")
-                
-                all_results['bias_variance'] = {
-                    'probability_variance': float(prob_variance),
-                    'mean_probability': float(mean_prob)
+                if not r.get('y_pred') or not r.get('y_proba') or not r.get('y_true'):
+                    continue
+                true_label = int(r['y_true'][0])
+                pred_label = int(r['y_pred'][0])
+                pred_prob  = float(r['y_proba'][0])  # prob of class 1
+                correct    = (pred_label == true_label)
+                # Calibration error: distance between predicted prob and true label
+                calib_error = abs(true_label - pred_prob)
+                records.append({
+                    'true_label':   true_label,
+                    'pred_label':   pred_label,
+                    'pred_prob':    pred_prob,
+                    'correct':      correct,
+                    'calib_error':  calib_error
+                })
+
+            if records:
+                all_probs   = [r['pred_prob']   for r in records]
+                all_correct = [r['correct']      for r in records]
+                all_errors  = [r['calib_error']  for r in records]
+                all_labels  = [r['true_label']   for r in records]
+
+                # ── 1. Overall calibration ────────────────────────────────────
+                mean_calib_error = float(np.mean(all_errors))
+                std_calib_error  = float(np.std(all_errors))
+
+                print(f"1. CALIBRATION ERROR (|true_label - pred_prob|)")
+                print(f"   Mean:  {mean_calib_error:.4f}  (0=perfect, 1=worst)")
+                print(f"   Std:   {std_calib_error:.4f}  (high = inconsistent across subjects)")
+                if mean_calib_error < 0.2:
+                    calib_verdict = "WELL CALIBRATED"
+                    print(f"   [OK] {calib_verdict}")
+                elif mean_calib_error < 0.4:
+                    calib_verdict = "MODERATELY CALIBRATED"
+                    print(f"   [!] {calib_verdict}")
+                else:
+                    calib_verdict = "POORLY CALIBRATED"
+                    print(f"   [!!] {calib_verdict}")
+
+                # ── 2. Confidence when correct vs wrong ───────────────────────
+                conf_correct = [r['pred_prob'] if r['true_label']==1 else 1-r['pred_prob']
+                                for r in records if r['correct']]
+                conf_wrong   = [r['pred_prob'] if r['true_label']==1 else 1-r['pred_prob']
+                                for r in records if not r['correct']]
+
+                mean_conf_correct = float(np.mean(conf_correct)) if conf_correct else 0.0
+                mean_conf_wrong   = float(np.mean(conf_wrong))   if conf_wrong   else 0.0
+
+                print(f"\n2. CONFIDENCE WHEN CORRECT vs WRONG")
+                print(f"   Mean confidence when CORRECT: {mean_conf_correct:.4f}")
+                print(f"   Mean confidence when WRONG:   {mean_conf_wrong:.4f}")
+                if mean_conf_correct > mean_conf_wrong:
+                    print(f"   [OK] Model is more confident when correct (healthy)")
+                else:
+                    print(f"   [!!] Model equally/more confident when WRONG (overconfident on errors)")
+
+                # ── 3. Patient vs control confidence split ────────────────────
+                prob_patients  = [r['pred_prob'] for r in records if r['true_label'] == 1]
+                prob_controls  = [r['pred_prob'] for r in records if r['true_label'] == 0]
+
+                mean_prob_pat  = float(np.mean(prob_patients)) if prob_patients  else 0.0
+                mean_prob_ctrl = float(np.mean(prob_controls)) if prob_controls  else 0.0
+                separation     = float(abs(mean_prob_pat - mean_prob_ctrl))
+
+                print(f"\n3. PATIENT vs CONTROL CONFIDENCE SPLIT")
+                print(f"   Mean prob(class=1) for PATIENTS:  {mean_prob_pat:.4f}")
+                print(f"   Mean prob(class=1) for CONTROLS:  {mean_prob_ctrl:.4f}")
+                print(f"   Separation:                        {separation:.4f}")
+                if separation > 0.3:
+                    sep_verdict = "GOOD SEPARATION — model distinguishes groups"
+                    print(f"   [OK] {sep_verdict}")
+                elif separation > 0.1:
+                    sep_verdict = "MODERATE SEPARATION"
+                    print(f"   [!] {sep_verdict}")
+                else:
+                    sep_verdict = "POOR SEPARATION — model struggles to distinguish groups"
+                    print(f"   [!!] {sep_verdict}")
+
+                # ── 4. Overconfident errors ───────────────────────────────────
+                overconf_threshold = 0.85
+                overconf_errors = [
+                    r for r in records
+                    if not r['correct'] and (
+                        (r['true_label']==1 and r['pred_prob'] < (1 - overconf_threshold)) or
+                        (r['true_label']==0 and r['pred_prob'] > overconf_threshold)
+                    )
+                ]
+                n_overconf = len(overconf_errors)
+                print(f"\n4. OVERCONFIDENT ERRORS (wrong but prob > {overconf_threshold})")
+                print(f"   Count: {n_overconf} / {len(records)} subjects")
+                if n_overconf == 0:
+                    overconf_verdict = "NONE — no dangerous overconfident errors"
+                    print(f"   [OK] {overconf_verdict}")
+                elif n_overconf <= 3:
+                    overconf_verdict = f"{n_overconf} overconfident errors — monitor these subjects"
+                    print(f"   [!] {overconf_verdict}")
+                else:
+                    overconf_verdict = f"{n_overconf} overconfident errors — model dangerously overconfident"
+                    print(f"   [!!] {overconf_verdict}")
+
+                # ── Save results ──────────────────────────────────────────────
+                all_results['prediction_confidence'] = {
+                    'n_subjects':             len(records),
+                    'mean_calibration_error': mean_calib_error,
+                    'std_calibration_error':  std_calib_error,
+                    'calibration_verdict':    calib_verdict,
+                    'mean_conf_when_correct': mean_conf_correct,
+                    'mean_conf_when_wrong':   mean_conf_wrong,
+                    'mean_prob_patients':     mean_prob_pat,
+                    'mean_prob_controls':     mean_prob_ctrl,
+                    'group_separation':       separation,
+                    'separation_verdict':     sep_verdict,
+                    'n_overconfident_errors': n_overconf,
+                    'overconfidence_verdict': overconf_verdict,
                 }
+            else:
+                print("[!] No valid per-subject records found in fold_results")
+                all_results['prediction_confidence'] = {}
         else:
-            print("âš ï¸ No predictions found in fold_results")
-            all_results['bias_variance'] = {}
-        
-        # ================================================================
+            print("[!] No predictions found in fold_results — skipping")
+            all_results['prediction_confidence'] = {}
+
+                # ================================================================
         # 4. GRADIENT DIAGNOSTICS
         # ================================================================
         print(f"\n{'='*70}")
