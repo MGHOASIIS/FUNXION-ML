@@ -326,7 +326,7 @@ class ComprehensiveModelMonitor:
             print("[!] No predictions found in fold_results — skipping")
             all_results['prediction_confidence'] = {}
 
-                # ================================================================
+        # ================================================================
         # 4. GRADIENT DIAGNOSTICS
         # ================================================================
         print(f"\n{'='*70}")
@@ -506,7 +506,7 @@ class ComprehensiveModelMonitor:
                 imp_viz = ImportanceVisualizer()
                 imp_viz.plot_importance_bars(
                     weight_imp_results,
-                    top_k=10,
+                    top_k=DOFS,
                     save_path=self.figures_dir / "feature_importance.png"
                 )
                 
