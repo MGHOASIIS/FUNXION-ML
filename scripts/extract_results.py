@@ -1,5 +1,5 @@
 """
-scrape_results.py
+extract_results.py
 -----------------
 Scrapes experiment results for HMM, CNN, RNN, and Transformer models
 across all tasks (1-6) and paradigms (1-4).
