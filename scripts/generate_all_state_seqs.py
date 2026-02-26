@@ -37,7 +37,7 @@ Usage (from project root):
     python scripts/generate_all_state_seqs.py --paradigms 1
 
     # Custom checkpoint root
-    python scripts/generate_all_state_seqs.py --hmm-dir experiments/
+    python scripts/generate_all_state_seqs.py --hmm-dir hmm-results/
 
     # With event CSV overlay
     python scripts/generate_all_state_seqs.py --csv-dir data/events/
