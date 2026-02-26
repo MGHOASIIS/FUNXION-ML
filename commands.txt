@@ -1,0 +1,10 @@
+generate_all_state_seqs:
+    python3 scripts/generate_all_state_seqs.py --csv-dir data/events/
+    Tasks only: python scripts/generate_all_state_seqs.py --tasks 1 2 --csv-dir data/events/
+    Task and paradigm: python scripts/generate_all_state_seqs.py --tasks 1 --paradigms 1 --csv-dir data/events/
+    skip already completed combinations: python scripts/generate_all_state_seqs.py --csv-dir data/events/ --skip-existing
+    Custom checkpoint directory: python scripts/generate_all_state_seqs.py --csv-dir data/events/ --hmm-dir experiments/
+
+generate_hmm_analysis_table:
+    python scripts/generate_hmm_analysis_table.py --all
+    python scripts/generate_hmm_analysis_table.py --task 1 --paradigm 1

@@ -183,7 +183,8 @@ class ComprehensiveModelMonitor:
         print(f"{'='*70}\n")
         
         fold_analyzer = PerFoldAnalyzer()
-        fold_analyzer.analyze_fold_consistency(fold_results, subject_ids.tolist())
+        consistency_stats = fold_analyzer.analyze_fold_consistency(fold_results, subject_ids.tolist())
+        all_results['fold_consistency'] = consistency_stats
         fold_analyzer.plot_fold_scores(
             fold_results,
             subject_ids.tolist(),
@@ -191,36 +192,140 @@ class ComprehensiveModelMonitor:
         )
         
         # ================================================================
-        # 3. BIAS-VARIANCE DECOMPOSITION
+        # ================================================================
+        # 3. PREDICTION CONFIDENCE ANALYSIS
         # ================================================================
         print(f"\n{'='*70}")
-        print("SECTION 3: BIAS-VARIANCE ANALYSIS")
+        print("SECTION 3: PREDICTION CONFIDENCE ANALYSIS")
         print(f"{'='*70}\n")
-        
-        if fold_results and 'y_pred' in fold_results[0]:
-            # Extract from your actual structure
-            all_preds = []
-            all_probs = []
-            
+
+        if fold_results and 'y_pred' in fold_results[0] and 'y_proba' in fold_results[0]:
+
+            # Collect per-subject data from fold results
+            records = []
             for r in fold_results:
-                if 'y_pred' in r: all_preds.extend(r['y_pred'])
-                if 'y_proba' in r: all_probs.extend(r['y_proba'])
-            
-            if all_probs:
-                prob_variance = np.var(all_probs)
-                mean_prob = np.mean(all_probs)
-                
-                print(f"Probability variance: {prob_variance:.4f}")
-                print(f"Mean probability: {mean_prob:.4f}")
-                
-                all_results['bias_variance'] = {
-                    'probability_variance': float(prob_variance),
-                    'mean_probability': float(mean_prob)
+                if not r.get('y_pred') or not r.get('y_proba') or not r.get('y_true'):
+                    continue
+                true_label = int(r['y_true'][0])
+                pred_label = int(r['y_pred'][0])
+                pred_prob  = float(r['y_proba'][0])  # prob of class 1
+                correct    = (pred_label == true_label)
+                # Calibration error: distance between predicted prob and true label
+                calib_error = abs(true_label - pred_prob)
+                records.append({
+                    'true_label':   true_label,
+                    'pred_label':   pred_label,
+                    'pred_prob':    pred_prob,
+                    'correct':      correct,
+                    'calib_error':  calib_error
+                })
+
+            if records:
+                all_probs   = [r['pred_prob']   for r in records]
+                all_correct = [r['correct']      for r in records]
+                all_errors  = [r['calib_error']  for r in records]
+                all_labels  = [r['true_label']   for r in records]
+
+                # ── 1. Overall calibration ────────────────────────────────────
+                mean_calib_error = float(np.mean(all_errors))
+                std_calib_error  = float(np.std(all_errors))
+
+                print(f"1. CALIBRATION ERROR (|true_label - pred_prob|)")
+                print(f"   Mean:  {mean_calib_error:.4f}  (0=perfect, 1=worst)")
+                print(f"   Std:   {std_calib_error:.4f}  (high = inconsistent across subjects)")
+                if mean_calib_error < 0.2:
+                    calib_verdict = "WELL CALIBRATED"
+                    print(f"   [OK] {calib_verdict}")
+                elif mean_calib_error < 0.4:
+                    calib_verdict = "MODERATELY CALIBRATED"
+                    print(f"   [!] {calib_verdict}")
+                else:
+                    calib_verdict = "POORLY CALIBRATED"
+                    print(f"   [!!] {calib_verdict}")
+
+                # ── 2. Confidence when correct vs wrong ───────────────────────
+                conf_correct = [r['pred_prob'] if r['true_label']==1 else 1-r['pred_prob']
+                                for r in records if r['correct']]
+                conf_wrong   = [r['pred_prob'] if r['true_label']==1 else 1-r['pred_prob']
+                                for r in records if not r['correct']]
+
+                mean_conf_correct = float(np.mean(conf_correct)) if conf_correct else 0.0
+                mean_conf_wrong   = float(np.mean(conf_wrong))   if conf_wrong   else 0.0
+
+                print(f"\n2. CONFIDENCE WHEN CORRECT vs WRONG")
+                print(f"   Mean confidence when CORRECT: {mean_conf_correct:.4f}")
+                print(f"   Mean confidence when WRONG:   {mean_conf_wrong:.4f}")
+                if mean_conf_correct > mean_conf_wrong:
+                    print(f"   [OK] Model is more confident when correct (healthy)")
+                else:
+                    print(f"   [!!] Model equally/more confident when WRONG (overconfident on errors)")
+
+                # ── 3. Patient vs control confidence split ────────────────────
+                prob_patients  = [r['pred_prob'] for r in records if r['true_label'] == 1]
+                prob_controls  = [r['pred_prob'] for r in records if r['true_label'] == 0]
+
+                mean_prob_pat  = float(np.mean(prob_patients)) if prob_patients  else 0.0
+                mean_prob_ctrl = float(np.mean(prob_controls)) if prob_controls  else 0.0
+                separation     = float(abs(mean_prob_pat - mean_prob_ctrl))
+
+                print(f"\n3. PATIENT vs CONTROL CONFIDENCE SPLIT")
+                print(f"   Mean prob(class=1) for PATIENTS:  {mean_prob_pat:.4f}")
+                print(f"   Mean prob(class=1) for CONTROLS:  {mean_prob_ctrl:.4f}")
+                print(f"   Separation:                        {separation:.4f}")
+                if separation > 0.3:
+                    sep_verdict = "GOOD SEPARATION — model distinguishes groups"
+                    print(f"   [OK] {sep_verdict}")
+                elif separation > 0.1:
+                    sep_verdict = "MODERATE SEPARATION"
+                    print(f"   [!] {sep_verdict}")
+                else:
+                    sep_verdict = "POOR SEPARATION — model struggles to distinguish groups"
+                    print(f"   [!!] {sep_verdict}")
+
+                # ── 4. Overconfident errors ───────────────────────────────────
+                overconf_threshold = 0.85
+                overconf_errors = [
+                    r for r in records
+                    if not r['correct'] and (
+                        (r['true_label']==1 and r['pred_prob'] < (1 - overconf_threshold)) or
+                        (r['true_label']==0 and r['pred_prob'] > overconf_threshold)
+                    )
+                ]
+                n_overconf = len(overconf_errors)
+                print(f"\n4. OVERCONFIDENT ERRORS (wrong but prob > {overconf_threshold})")
+                print(f"   Count: {n_overconf} / {len(records)} subjects")
+                if n_overconf == 0:
+                    overconf_verdict = "NONE — no dangerous overconfident errors"
+                    print(f"   [OK] {overconf_verdict}")
+                elif n_overconf <= 3:
+                    overconf_verdict = f"{n_overconf} overconfident errors — monitor these subjects"
+                    print(f"   [!] {overconf_verdict}")
+                else:
+                    overconf_verdict = f"{n_overconf} overconfident errors — model dangerously overconfident"
+                    print(f"   [!!] {overconf_verdict}")
+
+                # ── Save results ──────────────────────────────────────────────
+                all_results['prediction_confidence'] = {
+                    'n_subjects':             len(records),
+                    'mean_calibration_error': mean_calib_error,
+                    'std_calibration_error':  std_calib_error,
+                    'calibration_verdict':    calib_verdict,
+                    'mean_conf_when_correct': mean_conf_correct,
+                    'mean_conf_when_wrong':   mean_conf_wrong,
+                    'mean_prob_patients':     mean_prob_pat,
+                    'mean_prob_controls':     mean_prob_ctrl,
+                    'group_separation':       separation,
+                    'separation_verdict':     sep_verdict,
+                    'n_overconfident_errors': n_overconf,
+                    'overconfidence_verdict': overconf_verdict,
                 }
+            else:
+                print("[!] No valid per-subject records found in fold_results")
+                all_results['prediction_confidence'] = {}
         else:
-            print("⚠️ No predictions found in fold_results")
-            all_results['bias_variance'] = {}
-        
+            print("[!] No predictions found in fold_results — skipping")
+            all_results['prediction_confidence'] = {}
+
         # ================================================================
         # 4. GRADIENT DIAGNOSTICS
         # ================================================================
@@ -232,8 +337,8 @@ class ComprehensiveModelMonitor:
         pytorch_model = self._get_pytorch_model(model)
 
         if pytorch_model is None:
-            print("⚠️  Gradient Analysis SKIPPED")
-            print("   Model is not a PyTorch nn.Module (e.g. HMM — no gradients)")
+            print("âš ï¸  Gradient Analysis SKIPPED")
+            print("   Model is not a PyTorch nn.Module (e.g. HMM â€” no gradients)")
             print(f"   Model type: {type(model).__name__}")
             all_results['gradients'] = {'error': 'no_pytorch_model'}
         else:
@@ -255,7 +360,7 @@ class ComprehensiveModelMonitor:
                 y_torch = y_torch.to(DEVICE)
 
                 dataloader = DataLoader(TensorDataset(X_torch, y_torch), batch_size=n_samples)
-                print(f"✓ Created dataloader with {n_samples} samples, shape: {X_torch.shape}")
+                print(f"âœ“ Created dataloader with {n_samples} samples, shape: {X_torch.shape}")
 
                 grad_diagnostics = GradientDiagnostics()
                 gradient_stats = grad_diagnostics.analyze_gradients(
@@ -266,22 +371,22 @@ class ComprehensiveModelMonitor:
                 )
 
                 if gradient_stats:
-                    print("✓ Gradient analysis completed successfully")
+                    print("âœ“ Gradient analysis completed successfully")
                     try:
                         grad_diagnostics.plot_gradient_flow(
                             gradient_stats,
                             save_path=self.figures_dir / "gradient_flow.png"
                         )
-                        print("✓ Gradient flow plot saved")
+                        print("âœ“ Gradient flow plot saved")
                     except Exception as e:
-                        print(f"⚠️  Failed to plot gradient flow: {e}")
+                        print(f"âš ï¸  Failed to plot gradient flow: {e}")
                     all_results['gradients'] = gradient_stats
                 else:
-                    print("⚠️  Gradient analysis returned empty results")
+                    print("âš ï¸  Gradient analysis returned empty results")
                     all_results['gradients'] = {'error': 'empty_results'}
 
             except Exception as e:
-                print(f"⚠️  Gradient analysis failed: {e}")
+                print(f"âš ï¸  Gradient analysis failed: {e}")
                 all_results['gradients'] = {'error': str(e)}
 
             
@@ -296,8 +401,8 @@ class ComprehensiveModelMonitor:
         pytorch_model = self._get_pytorch_model(model)
 
         if pytorch_model is None:
-            print("⚠️  Activation Analysis SKIPPED")
-            print("   Model is not a PyTorch nn.Module (e.g. HMM — no activations)")
+            print("âš ï¸  Activation Analysis SKIPPED")
+            print("   Model is not a PyTorch nn.Module (e.g. HMM â€” no activations)")
             all_results['activations'] = {'error': 'no_pytorch_model'}
         else:
             try:
@@ -312,7 +417,7 @@ class ComprehensiveModelMonitor:
                         X_torch = X_torch.unsqueeze(1)
 
                 X_torch = X_torch.to(DEVICE)
-                print(f"✓ Prepared input tensor with shape: {X_torch.shape}")
+                print(f"âœ“ Prepared input tensor with shape: {X_torch.shape}")
 
                 act_analyzer = ActivationAnalyzer()
                 activations = act_analyzer.extract_activations(
@@ -322,28 +427,28 @@ class ComprehensiveModelMonitor:
                 )
 
                 if activations:
-                    print(f"✓ Extracted activations from {len(activations)} layers")
+                    print(f"âœ“ Extracted activations from {len(activations)} layers")
                     try:
                         act_stats = act_analyzer.analyze_activations(activations)
-                        print("✓ Activation analysis completed")
+                        print("âœ“ Activation analysis completed")
                         try:
                             act_analyzer.plot_activation_distributions(
                                 activations,
                                 save_path=self.figures_dir / "activation_distributions.png"
                             )
-                            print("✓ Activation distribution plots saved")
+                            print("âœ“ Activation distribution plots saved")
                         except Exception as e:
-                            print(f"⚠️  Failed to plot activation distributions: {e}")
+                            print(f"âš ï¸  Failed to plot activation distributions: {e}")
                         all_results['activations'] = act_stats
                     except Exception as e:
-                        print(f"⚠️  Failed to analyze activations: {e}")
+                        print(f"âš ï¸  Failed to analyze activations: {e}")
                         all_results['activations'] = {'error': f'analysis_failed: {e}'}
                 else:
-                    print("⚠️  No activations extracted")
+                    print("âš ï¸  No activations extracted")
                     all_results['activations'] = {'error': 'no_activations_extracted'}
 
             except Exception as e:
-                print(f"⚠️  Activation extraction failed: {e}")
+                print(f"âš ï¸  Activation extraction failed: {e}")
                 all_results['activations'] = {'error': str(e)}
             
         # ================================================================
@@ -356,8 +461,8 @@ class ComprehensiveModelMonitor:
         pytorch_model = self._get_pytorch_model(model)
 
         if pytorch_model is None:
-            print("⚠️  Weight Distribution Analysis SKIPPED")
-            print("   Model is not a PyTorch nn.Module (e.g. HMM — no weight tensors)")
+            print("âš ï¸  Weight Distribution Analysis SKIPPED")
+            print("   Model is not a PyTorch nn.Module (e.g. HMM â€” no weight tensors)")
             all_results['weights'] = {'error': 'no_pytorch_model'}
         else:
             try:
@@ -369,7 +474,7 @@ class ComprehensiveModelMonitor:
                 )
                 all_results['weights'] = weight_dists
             except Exception as e:
-                print(f"⚠️  Weight analysis failed: {e}")
+                print(f"âš ï¸  Weight analysis failed: {e}")
                 all_results['weights'] = {'error': str(e)}
         
         # ================================================================
@@ -401,7 +506,7 @@ class ComprehensiveModelMonitor:
                 imp_viz = ImportanceVisualizer()
                 imp_viz.plot_importance_bars(
                     weight_imp_results,
-                    top_k=10,
+                    top_k=DOFS,
                     save_path=self.figures_dir / "feature_importance.png"
                 )
                 
@@ -413,7 +518,7 @@ class ComprehensiveModelMonitor:
                     )
                 }
             except Exception as e:
-                print(f"⚠️  Could not extract RNN weights: {e}")
+                print(f"âš ï¸  Could not extract RNN weights: {e}")
         
         # ================================================================
         # 8. SALIENCY MAPS
@@ -425,8 +530,8 @@ class ComprehensiveModelMonitor:
         pytorch_model = self._get_pytorch_model(model)
 
         if pytorch_model is None:
-            print("⚠️  Saliency Analysis SKIPPED")
-            print("   Model is not a PyTorch nn.Module (e.g. HMM — no gradient-based saliency)")
+            print("âš ï¸  Saliency Analysis SKIPPED")
+            print("   Model is not a PyTorch nn.Module (e.g. HMM â€” no gradient-based saliency)")
             all_results['saliency'] = {'error': 'no_pytorch_model'}
         else:
             try:
@@ -460,7 +565,7 @@ class ComprehensiveModelMonitor:
                     )
 
             except Exception as e:
-                print(f"⚠️  Saliency analysis failed: {e}")
+                print(f"âš ï¸  Saliency analysis failed: {e}")
                 all_results['saliency'] = {'error': str(e)}
                 
         # ================================================================
@@ -523,9 +628,9 @@ class ComprehensiveModelMonitor:
 
             Handles the full range of types that end up in all_results:
             - nested dicts and lists (recurse)
-            - numpy arrays of any shape (tolist() — works for scalars and arrays)
+            - numpy arrays of any shape (tolist() â€” works for scalars and arrays)
             - numpy scalar types (int32, float64, etc.)
-            - Python float inf/nan (not valid JSON — map to None)
+            - Python float inf/nan (not valid JSON â€” map to None)
             - everything else passes through unchanged
             """
             if isinstance(v, dict):
@@ -563,24 +668,24 @@ class ComprehensiveModelMonitor:
             gap = results['overfitting']['generalization_gap']
             ratio = results['overfitting']['sample_param_ratio']
 
-            print(f"🔍 OVERFITTING ASSESSMENT:")
+            print(f"ðŸ” OVERFITTING ASSESSMENT:")
             print(f"   Risk Level:         {risk}")
             print(f"   Generalization Gap: {gap:.4f}")
             ratio_str = "N/A (generative model)" if ratio == float('inf') else f"{ratio:.2f}"
             print(f"   Sample/Param Ratio: {ratio_str}")
             
             if risk == "HIGH":
-                print(f"\n   🚨 ACTION REQUIRED:")
+                print(f"\n   ðŸš¨ ACTION REQUIRED:")
                 for rec in results['overfitting']['recommendations'][:3]:
-                    print(f"      • {rec}")
+                    print(f"      â€¢ {rec}")
             elif risk == "MEDIUM":
-                print(f"\n   ⚠️  MONITOR CAREFULLY")
+                print(f"\n   âš ï¸  MONITOR CAREFULLY")
             else:
-                print(f"\n   ✓ Model appears healthy")
+                print(f"\n   âœ“ Model appears healthy")
         
         # Feature importance
         if 'feature_importance' in results:
-            print(f"\n📊 TOP 6 DISCRIMINATIVE FEATURES:")
+            print(f"\nðŸ“Š TOP 6 DISCRIMINATIVE FEATURES:")
             sorted_feats = sorted(
                 results['feature_importance'].items(),
                 key=lambda x: x[1],
@@ -591,31 +696,31 @@ class ComprehensiveModelMonitor:
         
         # Gradient health
         if 'gradients' in results:
-            print(f"\n⚡ GRADIENT HEALTH:")
+            print(f"\nâš¡ GRADIENT HEALTH:")
             grad_data = results['gradients']
             if 'error' in grad_data:
-                # Skipped section — error string stored under 'error' key
-                print(f"   ⚠️  Skipped ({grad_data['error']})")
+                # Skipped section â€” error string stored under 'error' key
+                print(f"   âš ï¸  Skipped ({grad_data['error']})")
             else:
                 # grad_data is {layer_name: {'mean': ..., ...}, ...}
                 layer_stats = [v for v in grad_data.values() if isinstance(v, dict) and 'mean' in v]
                 if layer_stats:
                     grad_mean = layer_stats[0]['mean']
                     if grad_mean < 1e-7:
-                        print(f"   🚨 VANISHING gradients detected!")
+                        print(f"   ðŸš¨ VANISHING gradients detected!")
                     elif grad_mean > 10:
-                        print(f"   🚨 EXPLODING gradients detected!")
+                        print(f"   ðŸš¨ EXPLODING gradients detected!")
                     else:
-                        print(f"   ✓ Gradients healthy (mean={grad_mean:.6f})")
+                        print(f"   âœ“ Gradients healthy (mean={grad_mean:.6f})")
                 else:
-                    print(f"   ⚠️  No per-layer gradient data available")
+                    print(f"   âš ï¸  No per-layer gradient data available")
 
         # Activation health
         if 'activations' in results:
-            print(f"\n🧠 ACTIVATION HEALTH:")
+            print(f"\nðŸ§  ACTIVATION HEALTH:")
             act_data = results['activations']
             if 'error' in act_data:
-                print(f"   ⚠️  Skipped ({act_data['error']})")
+                print(f"   âš ï¸  Skipped ({act_data['error']})")
             else:
                 sparsity_vals = [
                     v['sparsity'] for v in act_data.values()
@@ -624,11 +729,11 @@ class ComprehensiveModelMonitor:
                 if sparsity_vals:
                     total_sparsity = np.mean(sparsity_vals)
                     if total_sparsity > 0.7:
-                        print(f"   ⚠️  High sparsity ({total_sparsity:.1%}) - many dead neurons")
+                        print(f"   âš ï¸  High sparsity ({total_sparsity:.1%}) - many dead neurons")
                     else:
-                        print(f"   ✓ Good activation diversity (sparsity={total_sparsity:.1%})")
+                        print(f"   âœ“ Good activation diversity (sparsity={total_sparsity:.1%})")
                 else:
-                    print(f"   ⚠️  No per-layer sparsity data available")
+                    print(f"   âš ï¸  No per-layer sparsity data available")
         
         print(f"\n{'#'*70}")
         print(f"# ALL DIAGNOSTICS COMPLETE")

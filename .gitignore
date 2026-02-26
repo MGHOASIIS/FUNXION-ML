@@ -1,6 +1,12 @@
-# Archived/
-*.xlsx
-*.csv
+Archived/
+# *.xlsx
+# *.csv
+# *.json
+*.png
 environment.yml
 __pycache__/
 experiments/
+experiments_from_hpc/
+logs/
+hmm-results/
+logs_from_hpc/

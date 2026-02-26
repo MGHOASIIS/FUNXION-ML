@@ -7,16 +7,14 @@
 # Arguments:
 #   $1  TASK      (1–6)
 #   $2  PARADIGM  (1–4)
-#   $3  MODEL     (hmm | cnn | rnn)
+#   $3  MODEL     (hmm | cnn | rnn | transformer)
 #
 # Usage (manual, for testing):
 #   sbatch --time=06:00:00 run_single.sh 1 1 rnn
+#   sbatch --time=06:00:00 run_single.sh 1 1 hmm
 # =============================================================================
 
-# ── Static SBATCH directives (NO executable code between these) ───────────────
-# All resource flags (--partition, --gres, --mem, --time, --job-name,
-# --output, --error) are passed by submit_all.sh on the sbatch command line.
-# Only truly static defaults live here as fallbacks for manual runs.
+# ── Static SBATCH directives ──────────────────────────────────────────────────
 #SBATCH --account=a.sathyanarayana
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -52,9 +50,6 @@ echo " Start:    $(date)"
 echo "============================================================"
 
 # ── Verify conda env exists ────────────────────────────────────────────────────
-# SLURM does not source .bashrc, so 'conda activate' is unavailable.
-# We use 'conda run' instead — it activates the env for a single command
-# without needing the shell integration to be initialised.
 if ! conda env list | grep -q "^${ENV_NAME} "; then
     echo "ERROR: conda env '${ENV_NAME}' not found. Run setup_env.sh first."
     exit 1
@@ -74,30 +69,42 @@ for i in range(torch.cuda.device_count()):
 cd "${PROJECT_ROOT}"
 
 # ── Build python command ───────────────────────────────────────────────────────
-ARGS="--task ${TASK} \
-    --paradigm ${PARADIGM} \
-    --model ${MODEL} \
-    --method truncate \
-    --patience 15 \
-    --min-delta 1e-4 \
-    --save-checkpoints"
-
-# Diagnostics for RNN and CNN only
-if [ "${MODEL}" != "hmm" ]; then
-    ARGS="${ARGS} --diagnostics"
+if [ "${MODEL}" == "hmm" ]; then
+    # ── HMM: hardcoded settings ───────────────────────────────────────────────
+    # - variable_length: sequences keep their full length (no truncation)
+    # - diagnostics:     emission plots, transition matrix, alignment analysis
+    # - save-checkpoints: save best model JSON after each run
+    # - hmm-csv-dir:     event CSVs for state-to-event alignment
+    ARGS="--task ${TASK} \
+        --paradigm ${PARADIGM} \
+        --model hmm \
+        --method variable_length \
+        --save-checkpoints \
+        --diagnostics \
+        --hmm-csv-dir data/events/"
+else
+    # ── CNN / RNN / Transformer ───────────────────────────────────────────────
+    ARGS="--task ${TASK} \
+        --paradigm ${PARADIGM} \
+        --model ${MODEL} \
+        --method truncate \
+        --patience 15 \
+        --min-delta 1e-4 \
+        --save-checkpoints \
+        --diagnostics"
 fi
 
 echo ""
 echo "[INFO] Command: conda run -n ${ENV_NAME} python main.py ${ARGS}"
 echo ""
 
-# ── Run via conda run (handles env activation without shell integration) ───────
+# ── Run ───────────────────────────────────────────────────────────────────────
 conda run -n "${ENV_NAME}" python main.py ${ARGS}
 EXIT_CODE=$?
 
 echo ""
 echo "============================================================"
-echo " End: $(date)"
+echo " End:       $(date)"
 echo " Exit code: ${EXIT_CODE}"
 echo "============================================================"
 

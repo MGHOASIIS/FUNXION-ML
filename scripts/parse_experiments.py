@@ -12,7 +12,7 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 
 # ── Config ────────────────────────────────────────────────────────────────────
 EXPERIMENTS_DIR = "experiments_from_hpc"
-OUTPUT_FILE = "xdash_results.xlsx"
+OUTPUT_FILE = "nn-models-results/xdash_results.xlsx"
 
 FEATURE_COLS = [
     "head_pos_x","head_pos_y","head_pos_z",
