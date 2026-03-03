@@ -1358,20 +1358,13 @@ class HMMModel(BaseModel):
         state_colors = {int(s): cmap(i) for i, s in enumerate(sorted(unique_states))}
 
         # ── Sensor groups: (label, channel_indices) ───────────────────────────
-        # CHAN_NAME order:
-        #   0-2   head_pos_x/y/z
-        #   3-5   head_rot_x/y/z
-        #   6-8   right_hand_pos_x/y/z
-        #   9-11  right_hand_rot_x/y/z
-        #   12-14 left_hand_pos_x/y/z
-        #   15-17 left_hand_rot_x/y/z
         sensor_groups = [
             ("Head Position",      list(range(0, 3))),
             ("Head Rotation",      list(range(3, 6))),
-            ("Right Hand Pos",     list(range(6, 9))),
-            ("Right Hand Rot",     list(range(9, 12))),
-            ("Left Hand Pos",      list(range(12, 15))),
-            ("Left Hand Rot",      list(range(15, 18))),
+            ("Left Hand Pos",     list(range(6, 9))),
+            ("Left Hand Rot",     list(range(9, 12))),
+            ("Right Hand Pos",      list(range(12, 15))),
+            ("Right Hand Rot",      list(range(15, 18))),
         ]
         n_groups = len(sensor_groups)
 
@@ -1745,12 +1738,12 @@ class HMMModel(BaseModel):
         _abbrev = {
             "head_pos_x": "hd_px", "head_pos_y": "hd_py", "head_pos_z": "hd_pz",
             "head_rot_x": "hd_rx", "head_rot_y": "hd_ry", "head_rot_z": "hd_rz",
-            "right_hand_pos_x": "rh_px", "right_hand_pos_y": "rh_py",
-            "right_hand_pos_z": "rh_pz", "right_hand_rot_x": "rh_rx",
-            "right_hand_rot_y": "rh_ry", "right_hand_rot_z": "rh_rz",
             "left_hand_pos_x":  "lh_px", "left_hand_pos_y":  "lh_py",
             "left_hand_pos_z":  "lh_pz", "left_hand_rot_x":  "lh_rx",
             "left_hand_rot_y":  "lh_ry", "left_hand_rot_z":  "lh_rz",
+            "right_hand_pos_x": "rh_px", "right_hand_pos_y": "rh_py",
+            "right_hand_pos_z": "rh_pz", "right_hand_rot_x": "rh_rx",
+            "right_hand_rot_y": "rh_ry", "right_hand_rot_z": "rh_rz",
         }
         print("\n[HMM] Per-State Importance (mean shift from cross-state average, top 6):")
         for s in range(n_states):
