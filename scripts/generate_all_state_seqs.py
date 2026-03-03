@@ -89,7 +89,7 @@ def parse_args():
                    help="Task numbers to process (default: 1-6)")
     p.add_argument("--paradigms",  nargs="+", type=int, default=list(range(1, 5)),
                    help="Paradigm numbers to process (default: 1-4)")
-    p.add_argument("--hmm-dir",    default="hmm-results",
+    p.add_argument("--hmm-dir",    default="experiments_from_hpc/",
                    help="Root directory containing HMM experiment folders (default: hmm-results)")
     p.add_argument("--out-dir",    default="hmm-results/state_seqs",
                    help="Output root (default: hmm-results/state_seqs)")
@@ -132,10 +132,8 @@ def find_checkpoint(hmm_dir: Path, task: int, paradigm: int) -> Path | None:
     """
     # Primary: standard experiment folder layout
     patterns = [
-        str(hmm_dir / f"T{task}-P{paradigm}-HMM*" / "model_checkpoints" /
-            f"HMM_T{task}_P{paradigm}_BA*.json"),
-        str(hmm_dir / f"HMM_T{task}_P{paradigm}" / "model_checkpoints" /
-            f"HMM_T{task}_P{paradigm}_BA*.json"),
+                str(hmm_dir/f"task{task}"/f"paradigm{paradigm}"/"HMM*"/"model_checkpoints"/f"results_T{task}_P{paradigm}_BA*.json"),
+                str(hmm_dir / f"HMM_T{task}_P{paradigm}" / "model_checkpoints"/f"HMM_T{task}_P{paradigm}_BA*.json"),
         # Recursive fallback
         str(hmm_dir / "**" / f"HMM_T{task}_P{paradigm}_BA*.json"),
     ]

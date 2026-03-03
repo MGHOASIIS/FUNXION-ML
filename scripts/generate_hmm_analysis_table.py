@@ -103,7 +103,7 @@ def _find(pattern):
 
 def load_results_json(hmm_dir, t, p):
     for pat in [
-        str(hmm_dir/f"T{t}-P{p}-HMM*"/"results"/f"results_T{t}_P{p}_HMM_variable_length.json"),
+        str(hmm_dir/f"task{t}"/f"paradigm{p}"/"HMM*"/"results"/f"results_T{t}_P{p}_HMM_variable_length.json"),
         str(hmm_dir/"**"/f"results_T{t}_P{p}_HMM_variable_length.json"),
     ]:
         f = _find(pat)
@@ -113,7 +113,7 @@ def load_results_json(hmm_dir, t, p):
 
 def load_checkpoint(hmm_dir, t, p):
     for pat in [
-        str(hmm_dir/f"T{t}-P{p}-HMM*"/"model_checkpoints"/f"HMM_T{t}_P{p}_BA*.json"),
+        str(hmm_dir/f"task{t}"/f"paradigm{p}"/"HMM*"/"model_checkpoints"/f"HMM_T{t}_P{p}_BA*.json"),
         str(hmm_dir/"**"/f"HMM_T{t}_P{p}_BA*.json"),
     ]:
         f = _find(pat)
@@ -123,7 +123,7 @@ def load_checkpoint(hmm_dir, t, p):
 
 def load_alignment(hmm_dir, t, p):
     for pat in [
-        str(hmm_dir/f"T{t}-P{p}-HMM*"/"diagnostics"/f"alignment_T{t}_P{p}.csv"),
+        str(hmm_dir/f"task{t}"/f"paradigm{p}"/"HMM*"/"diagnostics"/f"alignment_T{t}_P{p}.csv"),
         str(hmm_dir/"**"/f"alignment_T{t}_P{p}.csv"),
     ]:
         f = _find(pat)
@@ -907,7 +907,7 @@ def main():
     ap.add_argument("--task",     type=int, choices=range(1,7))
     ap.add_argument("--paradigm", type=int, choices=range(1,5))
     ap.add_argument("--all",      action="store_true")
-    ap.add_argument("--hmm-dir",       default="hmm-results")
+    ap.add_argument("--hmm-dir",       default="experiments_from_hpc/")
     ap.add_argument("--state-seq-dir", default="hmm-results/state_seqs")
     ap.add_argument("--px-details",    default="data/xdash_px_details.xlsx")
     ap.add_argument("--out",           default="hmm-results/reports")

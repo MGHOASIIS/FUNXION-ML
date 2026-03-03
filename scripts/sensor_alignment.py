@@ -55,18 +55,18 @@ ALL_FEATS     = list(SHORT_TO_FULL.values())   # canonical order, 18 features
 GROUPS = {
     "head_pos_x":"Head Pos","head_pos_y":"Head Pos","head_pos_z":"Head Pos",
     "head_rot_x":"Head Rot","head_rot_y":"Head Rot","head_rot_z":"Head Rot",
-    "right_hand_pos_x":"R.Hand Pos","right_hand_pos_y":"R.Hand Pos","right_hand_pos_z":"R.Hand Pos",
-    "right_hand_rot_x":"R.Hand Rot","right_hand_rot_y":"R.Hand Rot","right_hand_rot_z":"R.Hand Rot",
     "left_hand_pos_x":"L.Hand Pos","left_hand_pos_y":"L.Hand Pos","left_hand_pos_z":"L.Hand Pos",
     "left_hand_rot_x":"L.Hand Rot","left_hand_rot_y":"L.Hand Rot","left_hand_rot_z":"L.Hand Rot",
+    "right_hand_pos_x":"R.Hand Pos","right_hand_pos_y":"R.Hand Pos","right_hand_pos_z":"R.Hand Pos",
+    "right_hand_rot_x":"R.Hand Rot","right_hand_rot_y":"R.Hand Rot","right_hand_rot_z":"R.Hand Rot",
 }
 GROUP_FILLS = {
     "Head Pos":    PatternFill("solid", fgColor="D9E1F2"),
     "Head Rot":    PatternFill("solid", fgColor="BDD7EE"),
-    "R.Hand Pos":  PatternFill("solid", fgColor="E2EFDA"),
-    "R.Hand Rot":  PatternFill("solid", fgColor="C6EFCE"),
     "L.Hand Pos":  PatternFill("solid", fgColor="FFF2CC"),
     "L.Hand Rot":  PatternFill("solid", fgColor="FCE4D6"),
+    "R.Hand Pos":  PatternFill("solid", fgColor="E2EFDA"),
+    "R.Hand Rot":  PatternFill("solid", fgColor="C6EFCE"),
 }
 
 # Model integer → name  (from constants.py)

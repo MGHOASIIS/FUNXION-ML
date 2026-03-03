@@ -11,15 +11,15 @@ This research project develops state-of-the-art AI models to classify shoulder p
 ## 📊 Research Phases
 
 ### ✅ Phase 1: Baseline ML on Whole Time-Series (COMPLETED)
-- **Models**: HMM, 1D-CNN, RNN (GRU/LSTM, bidirectional)
+- **Models**: HMM, 1D-CNN, RNN (GRU/LSTM, bidirectional), Transformer
 - **Evaluation**: Leave-One-Out Cross-Validation (LOO CV) with balanced accuracy, recall, AUC
 - **Data**: N=60, 18 features per timepoint, 6 functional tasks, 4 classification paradigms
-- **Results**: RNN achieved most consistent performance
 
 ### 🔄 Phase 2: Enhanced ML with Validation (IN PROGRESS)  
-- **Data Augmentation**: TimeGAN, jittering, magnitude warping
+- **Data Augmentation**: 
 - **Validation Study**: Map DL sensor importance → XGBoost+SHAP traditional features
 - **Downsampling**: 50Hz → 20-25Hz to reduce computational burden
+- **Windowing**: Adaptive according to events or HMM states
 - **Infrastructure**: Comprehensive diagnostic monitoring and overfitting detection
 
 ### 🚀 Phase 3: Self-Supervised Transformers (PLANNED)
@@ -35,13 +35,29 @@ X-DASH-Data-Analysis/
 │   ├── constants.py              # Project constants (tasks, paradigms, features)
 │   ├── hyperparameter.py         # Model hyperparameter grids
 │   └── paths.py                  # File paths and directory structure
+|── 📁 data/                      # Data files
+├── ├──📁 events/                 # events files
+├── ├──📁 pickled_datasets/       # Pickled dataset files                
+|   |── paradigms.py              # paradigm selector 
+|   |── preprocessors.py          # preprocessor selector
+|   |── transforms.py             # transforms filter
+|   |── xdash_px_details.xlsx     # all details info
 ├── 📁 models/                    # Model implementations
 │   ├── base_model.py             # Abstract base class with reproducibility
 │   ├── hmm_model.py              # Hidden Markov Model
 │   ├── cnn_model.py              # 1D Convolutional Neural Network
 │   └── rnn_model.py              # Recurrent Neural Network (GRU/LSTM)
+│   └── transformer_model.py      # Transformer
+├── 📁 scripts/                   # Scripts
+│   ├── add_survey_columns.py     # Script to add 11 individual question columns (q1_jar … q11_sleep) plus DASH_survey formula to Sheet1 of xdash_px_details.xlsx.
+│   ├── extract_results.py        # Scrapes experiment results all models across all tasks (1-6) and paradigms (1-4).
+│   ├── generate_all_state_seqs.py# Generate all state sequences figures for hmm models across all task and paradigms for each user
+│   └── generate_figures.py       # Generate comparison graphs between nn-models
+│   └── generate_hmm_analysis_table.py # Generates a 4-sheet Excel analysis table for one HMM task×paradigm result.
+│   ├── generate_pickled_datasets.py   # Creates per-task pickled datasets from raw PlayerMovement.csv files,
+│   ├── parse_experiments.py      # Generates nn-models-results/xdash_results.xlsx"
+│   ├── sensor_alignment.py       # Compares sensor/feature importance rankings between old_csv and new_csv
 ├── 📁 training/                  # Training infrastructure
-│   ├── trainer.py                # Main training orchestrator
 │   ├── cross_validator.py        # LOO cross-validation
 │   └── evaluator.py              # Model evaluation and metrics
 ├── 📁 utils/                     # Utilities and diagnostics
@@ -51,7 +67,6 @@ X-DASH-Data-Analysis/
 │   ├── importance.py             # Feature importance analysis
 │   ├── visualization.py          # Plotting and visualization
 │   ├── metrics.py                # Evaluation metrics
-│   └── checkpointing.py          # Model checkpointing
 ├── 📁 preprocessing/              # Data preprocessing
 │   ├── loaders.py                # Data loading utilities
 │   ├── preprocessors.py          # Preprocessing pipelines
@@ -61,6 +76,9 @@ X-DASH-Data-Analysis/
 ├── 📁 logs/                      # Training and diagnostic logs
 ├── main.py                       # Main experiment runner
 └── environment.yml               # Conda environment
+└── run_single.sh                 # SLURM job script for a single XDash experiment.
+└── setup_env.sh                  # Run this ONCE on the login node before submitting any jobs.
+└── submit_all.sh                 # Submits all 96 experiments (6 tasks × 4 paradigms × 4 models) as independent SLURM jobs
 ```
 
 ## 📈 Dataset & Tasks
@@ -129,7 +147,7 @@ bash setup_env.sh
 # Submit single job
 sbatch run_single.sh 1 1 rnn
 
-# Submit all experiments (72 total)
+# Submit all experiments (96 total)
 bash submit_all.sh
 
 # Monitor jobs
@@ -142,6 +160,7 @@ squeue -u username
 - **HMM**: Generative probabilistic model with Gaussian emissions
 - **1D-CNN**: Deep convolutional architecture with GRU head
 - **RNN**: GRU/LSTM with bidirectional support and multiple pooling strategies
+- **Transformer**
 
 ### 📊 Comprehensive Diagnostics
 - **Overfitting Detection**: Critical for N=60 - generalization gap analysis, bias-variance decomposition
@@ -163,48 +182,60 @@ squeue -u username
 # HMM Configuration
 HMM_PARAM_GRID = {
         "covariance_type": ["diag", "full"],
-        "n_components":    [2, 3, 4, 5],
-        "n_iter":          [50, 100],
+        "n_components":    [2, 3, 4, 5, 6, 7, 8],
+        "n_iter":          [100],
     }
 
-# CNN confiugration
-  CNN_PARAM_GRID = {
-      # CNN trunk
-      "conv_channels": [
-          [32, 64, 64],
-          [64, 128, 128],
-          [64, 128, 256],
-      ],
-      "kernel_sizes": [
-          [7, 5, 3],
-          [5, 5, 5],
-      ],
-      # Regularisation & optimiser
-      "dropout_fc":    [0.2, 0.4],
-      "learning_rate": [1e-3, 2e-4],
-      "weight_decay":  [5e-4],
-      # Training loop
-      "batch_size":    [32, 64],
-      "epochs":        [100],
-  }
+    CNN_PARAM_GRID = {
+        # CNN trunk
+        "conv_channels": [
+            [32, 64, 64],
+            [64, 128, 128],
+            [64, 128, 256],
+        ],
+        "kernel_sizes": [
+            [7, 5, 3],
+            [5, 5, 5],
+        ],
+        # Regularisation & optimiser
+        "dropout_fc":    [0.2, 0.4],
+        "learning_rate": [1e-3, 2e-4],
+        "weight_decay":  [5e-4],
+        # Training loop
+        "batch_size":    [32, 64],
+        "epochs":        [100],
+    }
 
-# RNN configuration
-  RNN_PARAM_GRID = {
-      # architecture
-      "rnn_type":      ["lstm", "gru"],
-      "hidden_size":   [32, 64, 128],
-      "num_layers":    [1, 2],
-      # regularisation
-      "bidirectional": [True, False],
-      "dropout_rnn":   [0.2],
-      "dropout_fc":    [0.3],
-      # optimisation
-      "lr":            [1e-3],
-      "epochs":        [100],
-      "batch_size":    [32, 64],
-      # pooling
-      "pooling":       ["max", "mean", "last"],
-  }
+    RNN_PARAM_GRID = {
+        # architecture
+        "rnn_type":      ["lstm", "gru"],
+        "hidden_size":   [32, 64, 128],
+        "num_layers":    [1, 2],
+        # regularisation
+        "bidirectional": [True, False],
+        "dropout_rnn":   [0.2],
+        "dropout_fc":    [0.3],
+        # optimisation
+        "lr":            [1e-3],
+        "epochs":        [100],
+        "batch_size":    [32, 64],
+        # pooling
+        "pooling":       ["max", "mean", "last"],
+    }
+
+
+    TRANSFORMER_PARAM_GRID = {
+        "d_model":         [32],
+        "nhead":           [2, 4],       # nhead must divide d_model
+        "num_layers":      [1, 2],
+        "dim_feedforward": [64],
+        "dropout":         [0.1],
+        "dropout_fc":      [0.2],
+        "lr":              [1e-3, 2e-4],
+        "weight_decay":    [1e-4],
+        "batch_size":      [32],
+        "epochs":          [50],
+    }
 ```
 
 ### Reproducibility
@@ -253,19 +284,6 @@ diagnostic_results = run_complete_monitoring(
 # feature importance, clinical interpretation, bias-variance decomposition
 ```
 
-## 📝 Publications & Citations
-
-### Completed
-- **"ML Classification of Shoulder Pathology from XR-Based Functional Assessments"** - Phase 1 results
-
-### In Preparation
-- **Phase 2**: Enhanced ML with validation study
-- **Phase 3**: Self-supervised Transformers for clinical time-series
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [contributing guidelines](CONTRIBUTING.md) for details.
-
 ### Development Setup
 ```bash
 # Install development dependencies
@@ -283,7 +301,7 @@ mypy models/ utils/
 
 ## 📧 Contact & Collaboration
 
-**Research Team**: Orthopedic Lab, Massachusetts General Brigham
+**Research Team**: 
 **Primary Contact**: [Your Name] - [email@institution.edu]
 **Clinical Collaborator**: [Clinical Lead]
 **Technical Lead**: [Your Name]

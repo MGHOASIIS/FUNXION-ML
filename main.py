@@ -622,14 +622,6 @@ def main():
                             )
                         except Exception as _e:
                             print(f"    [{sid}] events not loaded: {_e}")
-                    model.plot_state_sequence_over_time(
-                        sequence=seq_s,
-                        state_sequence=states,
-                        events=events_for_plot,
-                        sampling_rate=50,
-                        title=f"State Seq — {sid} ({group}) T{args.task} P{args.paradigm}",
-                        save_path=diagnostics_dir / f"state_seq_{group}_{sid}.png"
-                    )
 
             # Event alignment — only if CSV dir is provided via --hmm-csv-dir
             if hasattr(args, "hmm_csv_dir") and args.hmm_csv_dir:
