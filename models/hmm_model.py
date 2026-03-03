@@ -1358,13 +1358,6 @@ class HMMModel(BaseModel):
         state_colors = {int(s): cmap(i) for i, s in enumerate(sorted(unique_states))}
 
         # ── Sensor groups: (label, channel_indices) ───────────────────────────
-        # CHAN_NAME order:
-        #   0-2   head_pos_x/y/z
-        #   3-5   head_rot_x/y/z
-        #   6-8   right_hand_pos_x/y/z
-        #   9-11  right_hand_rot_x/y/z
-        #   12-14 left_hand_pos_x/y/z
-        #   15-17 left_hand_rot_x/y/z
         sensor_groups = [
             ("Head Position",      list(range(0, 3))),
             ("Head Rotation",      list(range(3, 6))),
