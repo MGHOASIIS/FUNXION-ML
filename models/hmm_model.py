@@ -258,6 +258,8 @@ class HMMModel(BaseModel):
                     'y_pred':  y_pred.tolist(),
                     'y_proba': y_proba.tolist()
                 },
+                'subject_ids':       subject_ids.tolist() if subject_ids is not None else [],
+                'per_fold_results':  per_fold_results,
                 'timestamp': datetime.now().isoformat()
             }, f, indent=2)
 

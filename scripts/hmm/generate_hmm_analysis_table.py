@@ -231,8 +231,6 @@ def get_subject_lists(paradigm, df_px, n_g1_fallback, n_g0_fallback, df_align=No
             [f"fx{str(i+1).zfill(2)}" for i in range(n_g0_fallback)])
 
 
-# ── KEY FIX: Reproduce checkpoint y_true/y_pred ordering ─────────────────────
-
 def get_ckpt_subject_order(g1_ids, g0_ids):
     """
     The checkpoint stores y_true/y_pred in the order produced by
