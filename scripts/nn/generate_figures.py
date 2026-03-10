@@ -1,7 +1,7 @@
 """
 generate_figures.py
 -------------------
-Generates 6 publication-quality PNG figures from results_summary.csv.
+Generates 6 publication-quality PNG figures from all_models_diagnostics_summary.csv.
 
 Figures produced:
   fig1_main_results.png        — BA grouped bar chart: tasks × paradigms × models
@@ -12,7 +12,7 @@ Figures produced:
   fig6_model_comparison.png    — Radar + summary bar comparison
 
 Usage:
-    python generate_figures.py [--csv results_summary.csv] [--out figures/]
+    python generate_figures.py [--csv all_models_diagnostics_summary.csv] [--out figures/]
     python generate_figures.py --demo    # uses built-in synthetic data
 """
 
@@ -518,7 +518,7 @@ def fig_model_comparison(df, out_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--csv",  default="nn-models-results/results_summary.csv")
+    parser.add_argument("--csv",  default="nn-models-results/all_models_diagnostics_summary.csv")
     parser.add_argument("--out",  default="nn-models-results/figures")
     parser.add_argument("--demo", action="store_true",
                         help="Use synthetic demo data instead of CSV")

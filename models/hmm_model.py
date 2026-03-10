@@ -258,6 +258,8 @@ class HMMModel(BaseModel):
                     'y_pred':  y_pred.tolist(),
                     'y_proba': y_proba.tolist()
                 },
+                'subject_ids':       subject_ids.tolist() if subject_ids is not None else [],
+                'per_fold_results':  per_fold_results,
                 'timestamp': datetime.now().isoformat()
             }, f, indent=2)
 
@@ -344,7 +346,15 @@ class HMMModel(BaseModel):
             # Score each test sequence
             fold_preds, fold_proba = [], []
             for seq in seqs_test:
-                delta = hmm1.score(seq) - hmm0.score(seq)
+                n_frames = len(seq)
+                raw_delta = hmm1.score(seq) - hmm0.score(seq)
+                # Normalize by sequence length: raw LLR accumulates additively
+                # over frames, so long sequences produce extreme values that
+                # saturate the sigmoid to exactly 0 or 1.  Dividing by n_frames
+                # converts to a per-frame log-likelihood ratio, giving a
+                # well-spread probability score that is comparable across
+                # sequences of different lengths.
+                delta = raw_delta / n_frames if n_frames > 0 else raw_delta
                 prob = self._stable_sigmoid(delta)
                 pred = int(prob >= 0.5)
                 fold_preds.append(pred)
@@ -422,17 +432,21 @@ class HMMModel(BaseModel):
     @staticmethod
     def _stable_sigmoid(delta: float) -> float:
         """
-        Numerically stable sigmoid of log-likelihood delta.
+        Numerically stable sigmoid of a length-normalized log-likelihood delta.
 
         Parameters
         ----------
         delta : float
-            log P(seq | HMM1) - log P(seq | HMM0)
+            Per-frame log-likelihood ratio:
+            (log P(seq | HMM1) - log P(seq | HMM0)) / n_frames.
+            Normalizing by sequence length prevents saturation on long sequences.
 
         Returns
         -------
         float
-            Probability of class 1
+            Calibrated probability of class 1 in (0, 1).
+            Values near 0.5 indicate ambiguous sequences; values near 0 or 1
+            indicate strong model preference.
         """
         if delta >= 0:
             z = np.exp(-delta)

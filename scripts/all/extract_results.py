@@ -20,8 +20,8 @@ Expected directory structure:
                     summary.json
 
 Output:
-    results_summary.csv   — one row per experiment (flat metrics)
-    results_summary.json  — full structured data
+    all_models_diagnostics_summary.csv   — one row per experiment (flat metrics)
+    all_models_diagnostics_summary.json  — full structured data
 """
 
 import json
@@ -215,12 +215,12 @@ if __name__ == "__main__":
         df.reset_index(drop=True, inplace=True)
 
         # ── Save CSV ──────────────────────────────────────────────────────
-        csv_path = "nn-models-results/results_summary.csv"
+        csv_path = "nn-models-results/all_models_diagnostics_summary.csv"
         df.to_csv(csv_path, index=False)
         print(f"\n✓ CSV  saved → {csv_path}  ({len(df)} rows)")
 
         # ── Save JSON ─────────────────────────────────────────────────────
-        json_path = "nn-models-results/results_summary.json"
+        json_path = "nn-models-results/all_models_diagnostics_summary.json"
         with open(json_path, "w") as f:
             json.dump(records, f, indent=2, default=str)
         print(f"✓ JSON saved → {json_path}")

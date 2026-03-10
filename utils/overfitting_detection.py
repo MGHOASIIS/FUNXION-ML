@@ -837,18 +837,11 @@ class PerFoldAnalyzer:
         x_labels = []
         for i, r in enumerate(fold_results):
             if 'test_subjects' in r and r['test_subjects']:
-                # test_subjects is a list — take first entry and strip the
-                # "g0_N_" / "g1_N_" prefix to keep just the raw subject key
                 raw = str(r['test_subjects'][0])
-                # Format is "g0_2_fx03" or "g1_0_px01" — keep last part
-                parts = raw.split('_', 2)
-                label = parts[2] if len(parts) == 3 else raw
-            elif subject_ids and i < len(subject_ids):
-                raw = str(subject_ids[i])
                 parts = raw.split('_', 2)
                 label = parts[2] if len(parts) == 3 else raw
             else:
-                label = str(i)
+                label = str(i)   # hard fallback: just show fold index
             x_labels.append(label)
 
         x = np.arange(len(fold_results))
