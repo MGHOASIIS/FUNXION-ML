@@ -9,4 +9,9 @@ experiments/
 experiments_from_hpc/
 logs/
 hmm-results/
+nn-models-results/
 logs_from_hpc/
+data/px/
+data/fx/
+data/pickled_datasets/_backup_pre_unwrap/
+old_results/

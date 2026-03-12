@@ -45,12 +45,14 @@ if IS_TEST:
     }
 
 else:
+    # 14
     HMM_PARAM_GRID = {
         "covariance_type": ["diag", "full"],
         "n_components":    [2, 3, 4, 5, 6, 7, 8],
         "n_iter":          [100],
     }
 
+    # 48
     CNN_PARAM_GRID = {
         # CNN trunk
         "conv_channels": [
@@ -71,6 +73,7 @@ else:
         "epochs":        [100],
     }
 
+    # 144
     RNN_PARAM_GRID = {
         # architecture
         "rnn_type":      ["lstm", "gru"],
@@ -88,16 +91,16 @@ else:
         "pooling":       ["max", "mean", "last"],
     }
 
-
+    # 128
     TRANSFORMER_PARAM_GRID = {
-        "d_model":         [32],
-        "nhead":           [2, 4],       # nhead must divide d_model
+        "d_model":         [32, 64],
+        "nhead":           [4],       # nhead must divide d_model
         "num_layers":      [1, 2],
-        "dim_feedforward": [64],
-        "dropout":         [0.1],
-        "dropout_fc":      [0.2],
-        "lr":              [1e-3, 2e-4],
-        "weight_decay":    [1e-4],
+        "dim_feedforward": [64, 128],
+        "dropout":         [0.1, 0.3],
+        "dropout_fc":      [0.2, 0.4],
+        "lr":              [1e-3, 5e-4],
+        "weight_decay":    [1e-4, 1e-2],
         "batch_size":      [32],
         "epochs":          [50],
     }
