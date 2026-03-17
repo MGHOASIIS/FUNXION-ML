@@ -50,5 +50,6 @@ FEATURE_FILTER_NAMES = {
     1: "padding",
     2: "truncating",
     3: "dtw_embedding",
-    4: "sliding_window"
+    4: "sliding_window",
+    5: "phase_shift",
 }

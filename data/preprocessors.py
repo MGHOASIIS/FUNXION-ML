@@ -298,6 +298,61 @@ class VariableLengthPreprocessor(BasePreprocessor):
         return X_scaled, y, np.array(subject_ids)
 
 
+class ResamplingWrapper(BasePreprocessor):
+    """
+    Pre-pass wrapper that downsamples every sequence from ``original_rate`` Hz
+    to ``target_rate`` Hz, then delegates to any inner preprocessor.
+
+    This lets you combine resampling with any method:
+        ResamplingWrapper(target_rate=20, inner=PaddingPreprocessor())
+        ResamplingWrapper(target_rate=30, inner=SlidingWindowPreprocessor(...))
+
+    Parameters
+    ----------
+    inner : BasePreprocessor
+        The preprocessor to run after resampling.
+    target_rate : int
+        Desired sampling rate in Hz.
+    original_rate : int
+        Source sampling rate in Hz (default 50).
+    """
+
+    def __init__(
+        self,
+        inner: "BasePreprocessor",
+        target_rate: int = 25,
+        original_rate: int = 50,
+    ):
+        super().__init__()
+        self.inner = inner
+        self.target_rate = target_rate
+        self.original_rate = original_rate
+        self.downsampler = Downsample(target_rate, original_rate)
+
+    def _resample_group(self, group: Dict) -> Dict:
+        """Return a new dict with every tensor downsampled."""
+        resampled = {}
+        for k, tensor in group.items():
+            arr = self._to_numpy(tensor)
+            # drop optional timestamp column before resampling
+            signal = arr[:, 1:] if arr.shape[1] > 18 else arr
+            resampled[k] = self.downsampler.transform(signal)
+        return resampled
+
+    def prepare_data(
+        self,
+        g1: Dict,
+        g0: Dict,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        print(
+            f"\n[ResamplingWrapper] Resampling {self.original_rate} Hz "
+            f"→ {self.target_rate} Hz before '{type(self.inner).__name__}'"
+        )
+        g1_resampled = self._resample_group(g1)
+        g0_resampled = self._resample_group(g0)
+        return self.inner.prepare_data(g1_resampled, g0_resampled)
+
+
 class PreprocessorFactory:
     """Factory for creating preprocessors."""
     
@@ -305,51 +360,70 @@ class PreprocessorFactory:
     def create(
         method: str,
         model_type: str,
+        resample_rate: int = 50,
+        original_rate: int = 50,
         **kwargs
     ) -> BasePreprocessor:
         """
         Create a preprocessor.
-        
+
         Parameters
         ----------
         method : str
-            'truncate', 'sliding_window', 'padding', 'dtw_embedding','variable_length'
+            'truncate', 'sliding_window', 'padding', 'dtw_embedding',
+            'variable_length', or 'phase_shift'.
         model_type : str
-            'hmm', 'cnn', or 'rnn'
+            'hmm', 'cnn', 'rnn', or 'transformer'
+        resample_rate : int
+            Sampling frequency in Hz (default 50). When < original_rate,
+            sequences are automatically resampled before the method is applied.
+        original_rate : int
+            Source sampling rate in Hz (default 50).
         **kwargs
-            Additional parameters for preprocessor
-        
+            Additional parameters for the chosen preprocessor.
+
         Returns
         -------
         BasePreprocessor
-            Configured preprocessor instance
+            Configured preprocessor instance, wrapped in ResamplingWrapper
+            when resample_rate < original_rate.
         """
         # Determine output format based on model type
         if model_type.lower() == "cnn":
             output_format = "channels_first"
         else:
             output_format = "3d"
-        
+
         if method == "truncate":
-            return TruncatePreprocessor(output_format=output_format)
+            preprocessor = TruncatePreprocessor(output_format=output_format)
         elif method == "sliding_window":
-            return SlidingWindowPreprocessor(
+            preprocessor = SlidingWindowPreprocessor(
                 output_format=output_format,
                 **kwargs
             )
         elif method == "padding":
-            return PaddingPreprocessor(output_format=output_format)
+            preprocessor = PaddingPreprocessor(output_format=output_format)
         elif method == "dtw_embedding":
-            return DTWEmbeddingPreprocessor(**kwargs)
-        elif method == "downsample_truncate":
-            return DownsampleTruncatePreprocessor(
+            preprocessor = DTWEmbeddingPreprocessor(**kwargs)
+        elif method == "variable_length":
+            preprocessor = VariableLengthPreprocessor()
+        elif method == "phase_shift":
+            preprocessor = PhaseShiftPreprocessor(
                 output_format=output_format,
                 **kwargs
             )
-        elif method == "variable_length":
-            return VariableLengthPreprocessor()
         else:
             raise ValueError(f"Unknown preprocessing method: {method}")
+
+        # Automatically wrap with resampling when freq < original rate.
+        if resample_rate < original_rate:
+            preprocessor = ResamplingWrapper(
+                inner=preprocessor,
+                target_rate=resample_rate,
+                original_rate=original_rate,
+            )
+
+        return preprocessor
 
 
 class PaddingPreprocessor(BasePreprocessor):
@@ -486,68 +560,61 @@ class DTWEmbeddingPreprocessor(BasePreprocessor):
         return X_scaled, y, np.array(subject_ids)
 
 
-class DownsampleTruncatePreprocessor(BasePreprocessor):
-    """Downsample then truncate sequences."""
-    
-    def __init__(
-        self,
-        target_rate: int = 25,
-        original_rate: int = 50,
-        output_format: str = "3d"
-    ):
-        """
-        Parameters
-        ----------
-        target_rate : int
-            Target sampling rate in Hz
-        original_rate : int
-            Original sampling rate in Hz
-        output_format : str
-            '3d' or 'channels_first'
-        """
+class PhaseShiftPreprocessor(BasePreprocessor):
+    """
+    Circularly shift each recording by ``shift_fraction × T`` frames, then
+    truncate all sequences to T_min.
+
+    This tests whether temporal alignment — i.e. where the recording *starts*
+    within the movement cycle — affects classification performance.
+
+    Parameters
+    ----------
+    shift_fraction : float
+        Fraction of each sequence length to shift in [0, 1).
+        0.0 = no shift (equivalent to TruncatePreprocessor baseline).
+    output_format : str
+        '3d' for (N, T, C) or 'channels_first' for (N, C, T).
+    """
+
+    def __init__(self, shift_fraction: float = 0.1, output_format: str = "3d"):
         super().__init__()
-        self.target_rate = target_rate
-        self.original_rate = original_rate
+        self.shift_fraction = float(np.clip(shift_fraction, 0.0, 0.999))
         self.output_format = output_format
-        self.downsampler = Downsample(target_rate, original_rate)
-    
+
     def prepare_data(
         self,
         g1: Dict,
         g0: Dict
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Downsample and truncate data."""
+        """Apply circular phase shift then truncate to T_min."""
         all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
         signals = self._extract_signals(all_tensors)
-        
-        print(f"\n[DownsampleTruncatePreprocessor] Downsampling "
-              f"{self.original_rate}Hz → {self.target_rate}Hz")
-        
-        # Downsample all sequences
-        downsampled = [self.downsampler.transform(self._to_numpy(s)) 
-                      for s in signals]
-        
-        # Find minimum length after downsampling
-        T_min = min(d.shape[0] for d in downsampled)
-        print(f"[DownsampleTruncatePreprocessor] Truncating to T_min = {T_min}")
-        
-        # Truncate from the end
-        truncated = [d[-T_min:] for d in downsampled]
-        X = np.stack(truncated, axis=0)
-        
-        # Scale
+
+        print(f"\n[PhaseShiftPreprocessor] shift_fraction={self.shift_fraction:.3f}")
+
+        shifted = []
+        for s in signals:
+            s_np = self._to_numpy(s)
+            T = s_np.shape[0]
+            n_shift = int(round(self.shift_fraction * T))
+            shifted.append(np.roll(s_np, n_shift, axis=0))
+
+        T_min = min(s.shape[0] for s in shifted)
+        print(f"[PhaseShiftPreprocessor] Truncating to T_min = {T_min}")
+
+        truncated = [s[-T_min:] for s in shifted]
+        X = np.stack(truncated, axis=0)  # (N, T_min, C)
+
         N, T, C = X.shape
-        X_2d = X.reshape(N * T, C)
-        X_scaled_2d = self.scaler.fit_transform(X_2d)
-        X_scaled = X_scaled_2d.reshape(N, T, C)
-        
-        # Format conversion
+        X_scaled = self.scaler.fit_transform(X.reshape(N * T, C)).reshape(N, T, C)
+
         if self.output_format == "channels_first":
             X_scaled = X_scaled.transpose(0, 2, 1)
-            print(f"[DownsampleTruncatePreprocessor] Output shape: {X_scaled.shape}")
+            print(f"[PhaseShiftPreprocessor] Output shape (channels-first): {X_scaled.shape}")
         else:
-            print(f"[DownsampleTruncatePreprocessor] Output shape: {X_scaled.shape}")
-        
+            print(f"[PhaseShiftPreprocessor] Output shape (3D): {X_scaled.shape}")
+
         return X_scaled, y, np.array(subject_ids)
 
 
