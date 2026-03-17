@@ -495,19 +495,19 @@ class DTWEmbeddingPreprocessor(BasePreprocessor):
     def __init__(
         self,
         n_components: int = 10,
-        method: str = "mds"
+        dtw_method: str = "mds"
     ):
         """
         Parameters
         ----------
         n_components : int
             Number of embedding dimensions
-        method : str
+        dtw_method : str
             'mds', 'isomap', or 'tsne'
         """
         super().__init__()
         self.n_components = n_components
-        self.method = method.lower()
+        self.method = dtw_method.lower()
     
     def prepare_data(
         self,

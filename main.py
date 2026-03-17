@@ -436,7 +436,7 @@ def main():
         preproc_kwargs["overlap"] = args.overlap
     elif args.method == "dtw_embedding":
         preproc_kwargs["n_components"] = args.n_components
-        preproc_kwargs["method"] = args.dtw_method
+        preproc_kwargs["dtw_method"] = args.dtw_method
     elif args.method == "phase_shift":
         preproc_kwargs["shift_fraction"] = args.shift_fraction
     
