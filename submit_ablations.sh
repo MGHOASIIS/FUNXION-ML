@@ -150,6 +150,18 @@ submit_job() {
     [ -n "${FILTER_TASK}"     ] && [ "${TASK}"     != "${FILTER_TASK}"     ] && return
     [ -n "${FILTER_PARADIGM}" ] && [ "${PARADIGM}" != "${FILTER_PARADIGM}" ] && return
 
+    # DTW embedding produces fixed-size vectors, not sequences — incompatible with HMM
+    if [ "${METHOD}" = "dtw_embedding" ] && [ "${MODEL}" = "hmm" ]; then
+        [ "${DRY_RUN}" = true ] && echo "[SKIPPED] dtw_embedding incompatible with HMM — ${MODEL^^}_T${TASK}_P${PARADIGM}"
+        return
+    fi
+
+    # Padding causes NaN in HMM parameters (startprob_, transmat_) — incompatible
+    if [ "${METHOD}" = "padding" ] && [ "${MODEL}" = "hmm" ]; then
+        [ "${DRY_RUN}" = true ] && echo "[SKIPPED] padding incompatible with HMM — ${MODEL^^}_T${TASK}_P${PARADIGM}"
+        return
+    fi
+
     local TIME_LIMIT="08:00:00"
     local MEMORY="64G"
     local PARTITION="gpu"

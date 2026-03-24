@@ -471,11 +471,22 @@ def main():
                         paradigm=args.paradigm
                         )
 
+    # HMM + padding is numerically unstable regardless of covariance type —
+    # zero-padded regions cause NaN in startprob_ / transmat_ because padded
+    # states are never visited during training. Use variable_length instead.
+    if args.model.lower() == "hmm" and args.method == "padding":
+        raise ValueError(
+            "HMM + padding is not supported. Zero-padded regions cause NaN "
+            "in HMM parameters (startprob_, transmat_) because padded states "
+            "are never visited during training. Use --method variable_length "
+            "with HMM instead."
+        )
+
     results = model.fit(
         g1=g1,
         g0=g0,
         preprocessor=preprocessor,
-        paradigm=args.paradigm
+        paradigm=args.paradigm,
     )
     
     # ========================================================================

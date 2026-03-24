@@ -9,7 +9,6 @@ from typing import Dict, Tuple, Optional, List
 import numpy as np
 import torch
 from sklearn.preprocessing import StandardScaler
-from tslearn.metrics import cdist_dtw
 from sklearn.manifold import MDS, Isomap, TSNE
 
 from data.transforms import (
@@ -388,6 +387,28 @@ class PreprocessorFactory:
             Configured preprocessor instance, wrapped in ResamplingWrapper
             when resample_rate < original_rate.
         """
+        # DTW embedding produces one fixed-size vector per subject — not a
+        # temporal sequence. HMM requires sequences, so this combination is
+        # fundamentally incompatible.
+        if method == "dtw_embedding" and model_type.lower() == "hmm":
+            raise ValueError(
+                "dtw_embedding is incompatible with HMM. "
+                "DTW embedding collapses each subject to a single vector "
+                "(N, n_components) — HMM needs temporal sequences. "
+                "Use variable_length, truncate, or padding with HMM instead."
+            )
+
+        # Padding zero-pads shorter sequences up to T_max. For HMM this causes
+        # NaN in startprob_ and transmat_ because padded states are never visited
+        # during training — this happens regardless of covariance_type.
+        if method == "padding" and model_type.lower() == "hmm":
+            raise ValueError(
+                "padding is incompatible with HMM. Zero-padded regions cause "
+                "NaN in HMM parameters (startprob_, transmat_) because padded "
+                "states are never visited during training. "
+                "Use variable_length with HMM instead."
+            )
+
         # Determine output format based on model type
         if model_type.lower() == "cnn":
             output_format = "channels_first"
@@ -508,7 +529,43 @@ class DTWEmbeddingPreprocessor(BasePreprocessor):
         super().__init__()
         self.n_components = n_components
         self.method = dtw_method.lower()
-    
+
+    @staticmethod
+    def _dtw_distance(a: np.ndarray, b: np.ndarray) -> float:
+        """
+        Compute DTW distance between two multivariate sequences.
+        Works with variable-length sequences — no tslearn dependency.
+        """
+        n, m = len(a), len(b)
+        dtw_matrix = np.full((n + 1, m + 1), np.inf)
+        dtw_matrix[0, 0] = 0.0
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                cost = np.linalg.norm(a[i - 1] - b[j - 1])
+                dtw_matrix[i, j] = cost + min(
+                    dtw_matrix[i - 1, j],      # insertion
+                    dtw_matrix[i, j - 1],      # deletion
+                    dtw_matrix[i - 1, j - 1],  # match
+                )
+        return float(dtw_matrix[n, m])
+
+    def _compute_dtw_matrix(self, sequences) -> np.ndarray:
+        """Compute full pairwise DTW distance matrix."""
+        N = len(sequences)
+        D = np.zeros((N, N))
+        total = N * (N - 1) // 2
+        done = 0
+        for i in range(N):
+            for j in range(i + 1, N):
+                d = self._dtw_distance(sequences[i], sequences[j])
+                D[i, j] = d
+                D[j, i] = d
+                done += 1
+                if done % 50 == 0:
+                    print(f"  DTW pairs: {done}/{total}", end="\r")
+        print(f"  DTW pairs: {total}/{total} — done")
+        return D
+
     def prepare_data(
         self,
         g1: Dict,
@@ -517,46 +574,43 @@ class DTWEmbeddingPreprocessor(BasePreprocessor):
         """Prepare data using DTW + embedding."""
         all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
         signals = self._extract_signals(all_tensors)
-        
-        print(f"\n[DTWEmbeddingPreprocessor] Computing DTW distance matrix...")
-        
-        # Convert to list of numpy arrays
+
+        print(f"\n[DTWEmbeddingPreprocessor] Computing DTW distance matrix "
+              f"({len(signals)} sequences)...")
+
         all_numpy = [self._to_numpy(s) for s in signals]
-        
-        # Compute DTW distance matrix
-        D = cdist_dtw(all_numpy)
+        D = self._compute_dtw_matrix(all_numpy)
         print(f"[DTWEmbeddingPreprocessor] DTW matrix shape: {D.shape}")
-        
-        # Apply embedding
-        print(f"[DTWEmbeddingPreprocessor] Applying {self.method.upper()} embedding...")
-        
+
+        print(f"[DTWEmbeddingPreprocessor] Applying {self.method.upper()} embedding "
+              f"(n_components={self.n_components})...")
+
         if self.method == "mds":
             embedder = MDS(
                 n_components=self.n_components,
-                dissimilarity="precomputed",
-                random_state=42
+                metric="precomputed",
+                random_state=42,
+                n_init=1,
             )
         elif self.method == "isomap":
             embedder = Isomap(
                 n_components=self.n_components,
                 metric="precomputed",
-                n_neighbors=min(5, len(all_numpy) - 1)
+                n_neighbors=min(5, len(all_numpy) - 1),
             )
         elif self.method == "tsne":
             embedder = TSNE(
                 n_components=min(self.n_components, 3),
                 metric="precomputed",
-                random_state=42
+                random_state=42,
             )
         else:
             raise ValueError(f"Unknown embedding method: {self.method}")
-        
+
         X = embedder.fit_transform(D)
         print(f"[DTWEmbeddingPreprocessor] Embedded shape: {X.shape}")
-        
-        # Scale
+
         X_scaled = self.scaler.fit_transform(X)
-        
         return X_scaled, y, np.array(subject_ids)
 
 
