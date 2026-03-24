@@ -113,14 +113,23 @@ def load_ablation_summaries(
     task_filter: Optional[int] = None,
     paradigm_filter: Optional[int] = None,
     model_filter: Optional[str] = None,
+    name_filter: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Walk exp_dir recursively, load every summary.json, parse into a flat
     DataFrame. Handles both ablation and standard experiment layouts.
+
+    name_filter : str, optional
+        Only include experiments whose name contains this string.
+        e.g. 'ABL_' to include only ablation runs.
     """
     pattern = os.path.join(exp_dir, "**", "summary.json")
     files = glob.glob(pattern, recursive=True)
     print(f"[Parser] Found {len(files)} summary.json files in {exp_dir}")
+
+    if name_filter:
+        files = [f for f in files if name_filter in Path(f).parent.name]
+        print(f"[Parser] After name filter '{name_filter}': {len(files)} files")
 
     rows = []
     for fpath in sorted(files):
@@ -469,11 +478,11 @@ def _scope_label(task: Optional[int], paradigm: Optional[int]) -> str:
     if task:
         parts.append(f"Task {task} ({TASK_NAMES.get(task, '')})")
     else:
-        parts.append("Task 4")
+        parts.append("All Tasks")
     if paradigm:
         parts.append(f"Paradigm {paradigm} ({PARADIGM_NAMES.get(paradigm, '')})")
     else:
-        parts.append("Paradigm 2")
+        parts.append("All Paradigms")
     return " | ".join(parts)
 
 
@@ -497,21 +506,25 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--exp-dir",   default="logs/ablations",
-                   help="Root directory containing ablation experiment folders "
-                        "(default: logs/ablations)")
-    p.add_argument("--out-dir",   default="ablation_results",
+    p.add_argument("--exp-dir",     default="experiments_abl",
+                   help="Root directory containing experiment folders "
+                        "(default: experiments). On HPC: /home/singh.vishwa/xdash2/experiments")
+    p.add_argument("--out-dir",     default="ablation_results",
                    help="Output directory for plots and tables (default: ablation_results)")
-    p.add_argument("--metric",    default="ba",
+    p.add_argument("--metric",      default="ba",
                    choices=["ba", "auc", "recall", "precision", "f1"],
                    help="Metric to plot and rank by (default: ba)")
-    p.add_argument("--task",      type=int, default=None, choices=range(1, 7),
+    p.add_argument("--task",        type=int, default=None, choices=range(1, 7),
                    help="Filter to a single task (default: all)")
-    p.add_argument("--paradigm",  type=int, default=None, choices=range(1, 5),
+    p.add_argument("--paradigm",    type=int, default=None, choices=range(1, 5),
                    help="Filter to a single paradigm (default: all)")
-    p.add_argument("--model",     type=str, default=None,
+    p.add_argument("--model",       type=str, default=None,
                    choices=["hmm", "cnn", "rnn", "transformer"],
                    help="Filter to a single model (default: all)")
+    p.add_argument("--name-filter", type=str, default="ABL_",
+                   help="Only include experiments whose directory name contains "
+                        "this string (default: 'ABL_' to include only ablation runs). "
+                        "Pass '' to include all experiments.")
     return p.parse_args()
 
 
@@ -525,10 +538,11 @@ def main():
 
     print(f"\n{'='*70}")
     print("  Ablation Comparison")
-    print(f"  Exp dir : {args.exp_dir}")
-    print(f"  Metric  : {args.metric} ({METRIC_LABELS.get(args.metric, '')})")
-    print(f"  Filters : task={args.task}  paradigm={args.paradigm}  model={args.model}")
-    print(f"  Output  : {out_dir}")
+    print(f"  Exp dir     : {args.exp_dir}")
+    print(f"  Metric      : {args.metric} ({METRIC_LABELS.get(args.metric, '')})")
+    print(f"  Name filter : '{args.name_filter}' ('' = all experiments)")
+    print(f"  Filters     : task={args.task}  paradigm={args.paradigm}  model={args.model}")
+    print(f"  Output      : {out_dir}")
     print(f"{'='*70}\n")
 
     # ── Load ──────────────────────────────────────────────────────────────────
@@ -537,6 +551,7 @@ def main():
         task_filter=args.task,
         paradigm_filter=args.paradigm,
         model_filter=args.model,
+        name_filter=args.name_filter if args.name_filter else None,
     )
     if df.empty:
         print("No data found — exiting.")
