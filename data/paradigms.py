@@ -52,6 +52,10 @@ class ParadigmSelector:
             f"Please check that the file is the correct xdash_px_details.xlsx."
         )
     
+    # Subjects to exclude from all paradigms
+    EXCLUDE_G1 = {"PX20"}
+    EXCLUDE_G0 = {"fx20"}
+
     def select_paradigm(
         self,
         patient_data: Dict,
@@ -75,6 +79,14 @@ class ParadigmSelector:
         g1, g0 : Tuple[Dict, Dict]
             Data dictionaries for group 1 and group 0
         """
+        # Apply global exclusions before any paradigm filtering
+        patient_data  = {k: v for k, v in patient_data.items()  if k not in self.EXCLUDE_G1}
+        control_data  = {k: v for k, v in control_data.items()  if k not in self.EXCLUDE_G0}
+
+        excluded_g1 = [k for k in self.EXCLUDE_G1]
+        excluded_g0 = [k for k in self.EXCLUDE_G0]
+        print(f"[ParadigmSelector] Excluded from g1: {excluded_g1}")
+        print(f"[ParadigmSelector] Excluded from g0: {excluded_g0}")
         if paradigm == 1:
             return self._patients_vs_controls(patient_data, control_data)
         elif paradigm == 2:

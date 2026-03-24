@@ -9,7 +9,6 @@ from typing import Dict, Tuple, Optional, List
 import numpy as np
 import torch
 from sklearn.preprocessing import StandardScaler
-from tslearn.metrics import cdist_dtw
 from sklearn.manifold import MDS, Isomap, TSNE
 
 from data.transforms import (
@@ -298,6 +297,61 @@ class VariableLengthPreprocessor(BasePreprocessor):
         return X_scaled, y, np.array(subject_ids)
 
 
+class ResamplingWrapper(BasePreprocessor):
+    """
+    Pre-pass wrapper that downsamples every sequence from ``original_rate`` Hz
+    to ``target_rate`` Hz, then delegates to any inner preprocessor.
+
+    This lets you combine resampling with any method:
+        ResamplingWrapper(target_rate=20, inner=PaddingPreprocessor())
+        ResamplingWrapper(target_rate=30, inner=SlidingWindowPreprocessor(...))
+
+    Parameters
+    ----------
+    inner : BasePreprocessor
+        The preprocessor to run after resampling.
+    target_rate : int
+        Desired sampling rate in Hz.
+    original_rate : int
+        Source sampling rate in Hz (default 50).
+    """
+
+    def __init__(
+        self,
+        inner: "BasePreprocessor",
+        target_rate: int = 25,
+        original_rate: int = 50,
+    ):
+        super().__init__()
+        self.inner = inner
+        self.target_rate = target_rate
+        self.original_rate = original_rate
+        self.downsampler = Downsample(target_rate, original_rate)
+
+    def _resample_group(self, group: Dict) -> Dict:
+        """Return a new dict with every tensor downsampled."""
+        resampled = {}
+        for k, tensor in group.items():
+            arr = self._to_numpy(tensor)
+            # drop optional timestamp column before resampling
+            signal = arr[:, 1:] if arr.shape[1] > 18 else arr
+            resampled[k] = self.downsampler.transform(signal)
+        return resampled
+
+    def prepare_data(
+        self,
+        g1: Dict,
+        g0: Dict,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        print(
+            f"\n[ResamplingWrapper] Resampling {self.original_rate} Hz "
+            f"→ {self.target_rate} Hz before '{type(self.inner).__name__}'"
+        )
+        g1_resampled = self._resample_group(g1)
+        g0_resampled = self._resample_group(g0)
+        return self.inner.prepare_data(g1_resampled, g0_resampled)
+
+
 class PreprocessorFactory:
     """Factory for creating preprocessors."""
     
@@ -305,51 +359,92 @@ class PreprocessorFactory:
     def create(
         method: str,
         model_type: str,
+        resample_rate: int = 50,
+        original_rate: int = 50,
         **kwargs
     ) -> BasePreprocessor:
         """
         Create a preprocessor.
-        
+
         Parameters
         ----------
         method : str
-            'truncate', 'sliding_window', 'padding', 'dtw_embedding','variable_length'
+            'truncate', 'sliding_window', 'padding', 'dtw_embedding',
+            'variable_length', or 'phase_shift'.
         model_type : str
-            'hmm', 'cnn', or 'rnn'
+            'hmm', 'cnn', 'rnn', or 'transformer'
+        resample_rate : int
+            Sampling frequency in Hz (default 50). When < original_rate,
+            sequences are automatically resampled before the method is applied.
+        original_rate : int
+            Source sampling rate in Hz (default 50).
         **kwargs
-            Additional parameters for preprocessor
-        
+            Additional parameters for the chosen preprocessor.
+
         Returns
         -------
         BasePreprocessor
-            Configured preprocessor instance
+            Configured preprocessor instance, wrapped in ResamplingWrapper
+            when resample_rate < original_rate.
         """
+        # DTW embedding produces one fixed-size vector per subject — not a
+        # temporal sequence. HMM requires sequences, so this combination is
+        # fundamentally incompatible.
+        if method == "dtw_embedding" and model_type.lower() == "hmm":
+            raise ValueError(
+                "dtw_embedding is incompatible with HMM. "
+                "DTW embedding collapses each subject to a single vector "
+                "(N, n_components) — HMM needs temporal sequences. "
+                "Use variable_length, truncate, or padding with HMM instead."
+            )
+
+        # Padding zero-pads shorter sequences up to T_max. For HMM this causes
+        # NaN in startprob_ and transmat_ because padded states are never visited
+        # during training — this happens regardless of covariance_type.
+        if method == "padding" and model_type.lower() == "hmm":
+            raise ValueError(
+                "padding is incompatible with HMM. Zero-padded regions cause "
+                "NaN in HMM parameters (startprob_, transmat_) because padded "
+                "states are never visited during training. "
+                "Use variable_length with HMM instead."
+            )
+
         # Determine output format based on model type
         if model_type.lower() == "cnn":
             output_format = "channels_first"
         else:
             output_format = "3d"
-        
+
         if method == "truncate":
-            return TruncatePreprocessor(output_format=output_format)
+            preprocessor = TruncatePreprocessor(output_format=output_format)
         elif method == "sliding_window":
-            return SlidingWindowPreprocessor(
+            preprocessor = SlidingWindowPreprocessor(
                 output_format=output_format,
                 **kwargs
             )
         elif method == "padding":
-            return PaddingPreprocessor(output_format=output_format)
+            preprocessor = PaddingPreprocessor(output_format=output_format)
         elif method == "dtw_embedding":
-            return DTWEmbeddingPreprocessor(**kwargs)
-        elif method == "downsample_truncate":
-            return DownsampleTruncatePreprocessor(
+            preprocessor = DTWEmbeddingPreprocessor(**kwargs)
+        elif method == "variable_length":
+            preprocessor = VariableLengthPreprocessor()
+        elif method == "phase_shift":
+            preprocessor = PhaseShiftPreprocessor(
                 output_format=output_format,
                 **kwargs
             )
-        elif method == "variable_length":
-            return VariableLengthPreprocessor()
         else:
             raise ValueError(f"Unknown preprocessing method: {method}")
+
+        # Automatically wrap with resampling when freq < original rate.
+        if resample_rate < original_rate:
+            preprocessor = ResamplingWrapper(
+                inner=preprocessor,
+                target_rate=resample_rate,
+                original_rate=original_rate,
+            )
+
+        return preprocessor
 
 
 class PaddingPreprocessor(BasePreprocessor):
@@ -421,20 +516,56 @@ class DTWEmbeddingPreprocessor(BasePreprocessor):
     def __init__(
         self,
         n_components: int = 10,
-        method: str = "mds"
+        dtw_method: str = "mds"
     ):
         """
         Parameters
         ----------
         n_components : int
             Number of embedding dimensions
-        method : str
+        dtw_method : str
             'mds', 'isomap', or 'tsne'
         """
         super().__init__()
         self.n_components = n_components
-        self.method = method.lower()
-    
+        self.method = dtw_method.lower()
+
+    @staticmethod
+    def _dtw_distance(a: np.ndarray, b: np.ndarray) -> float:
+        """
+        Compute DTW distance between two multivariate sequences.
+        Works with variable-length sequences — no tslearn dependency.
+        """
+        n, m = len(a), len(b)
+        dtw_matrix = np.full((n + 1, m + 1), np.inf)
+        dtw_matrix[0, 0] = 0.0
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                cost = np.linalg.norm(a[i - 1] - b[j - 1])
+                dtw_matrix[i, j] = cost + min(
+                    dtw_matrix[i - 1, j],      # insertion
+                    dtw_matrix[i, j - 1],      # deletion
+                    dtw_matrix[i - 1, j - 1],  # match
+                )
+        return float(dtw_matrix[n, m])
+
+    def _compute_dtw_matrix(self, sequences) -> np.ndarray:
+        """Compute full pairwise DTW distance matrix."""
+        N = len(sequences)
+        D = np.zeros((N, N))
+        total = N * (N - 1) // 2
+        done = 0
+        for i in range(N):
+            for j in range(i + 1, N):
+                d = self._dtw_distance(sequences[i], sequences[j])
+                D[i, j] = d
+                D[j, i] = d
+                done += 1
+                if done % 50 == 0:
+                    print(f"  DTW pairs: {done}/{total}", end="\r")
+        print(f"  DTW pairs: {total}/{total} — done")
+        return D
+
     def prepare_data(
         self,
         g1: Dict,
@@ -443,111 +574,101 @@ class DTWEmbeddingPreprocessor(BasePreprocessor):
         """Prepare data using DTW + embedding."""
         all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
         signals = self._extract_signals(all_tensors)
-        
-        print(f"\n[DTWEmbeddingPreprocessor] Computing DTW distance matrix...")
-        
-        # Convert to list of numpy arrays
+
+        print(f"\n[DTWEmbeddingPreprocessor] Computing DTW distance matrix "
+              f"({len(signals)} sequences)...")
+
         all_numpy = [self._to_numpy(s) for s in signals]
-        
-        # Compute DTW distance matrix
-        D = cdist_dtw(all_numpy)
+        D = self._compute_dtw_matrix(all_numpy)
         print(f"[DTWEmbeddingPreprocessor] DTW matrix shape: {D.shape}")
-        
-        # Apply embedding
-        print(f"[DTWEmbeddingPreprocessor] Applying {self.method.upper()} embedding...")
-        
+
+        print(f"[DTWEmbeddingPreprocessor] Applying {self.method.upper()} embedding "
+              f"(n_components={self.n_components})...")
+
         if self.method == "mds":
             embedder = MDS(
                 n_components=self.n_components,
-                dissimilarity="precomputed",
-                random_state=42
+                metric="precomputed",
+                random_state=42,
+                n_init=1,
             )
         elif self.method == "isomap":
             embedder = Isomap(
                 n_components=self.n_components,
                 metric="precomputed",
-                n_neighbors=min(5, len(all_numpy) - 1)
+                n_neighbors=min(5, len(all_numpy) - 1),
             )
         elif self.method == "tsne":
             embedder = TSNE(
                 n_components=min(self.n_components, 3),
                 metric="precomputed",
-                random_state=42
+                random_state=42,
             )
         else:
             raise ValueError(f"Unknown embedding method: {self.method}")
-        
+
         X = embedder.fit_transform(D)
         print(f"[DTWEmbeddingPreprocessor] Embedded shape: {X.shape}")
-        
-        # Scale
+
         X_scaled = self.scaler.fit_transform(X)
-        
         return X_scaled, y, np.array(subject_ids)
 
 
-class DownsampleTruncatePreprocessor(BasePreprocessor):
-    """Downsample then truncate sequences."""
-    
-    def __init__(
-        self,
-        target_rate: int = 25,
-        original_rate: int = 50,
-        output_format: str = "3d"
-    ):
-        """
-        Parameters
-        ----------
-        target_rate : int
-            Target sampling rate in Hz
-        original_rate : int
-            Original sampling rate in Hz
-        output_format : str
-            '3d' or 'channels_first'
-        """
+class PhaseShiftPreprocessor(BasePreprocessor):
+    """
+    Circularly shift each recording by ``shift_fraction × T`` frames, then
+    truncate all sequences to T_min.
+
+    This tests whether temporal alignment — i.e. where the recording *starts*
+    within the movement cycle — affects classification performance.
+
+    Parameters
+    ----------
+    shift_fraction : float
+        Fraction of each sequence length to shift in [0, 1).
+        0.0 = no shift (equivalent to TruncatePreprocessor baseline).
+    output_format : str
+        '3d' for (N, T, C) or 'channels_first' for (N, C, T).
+    """
+
+    def __init__(self, shift_fraction: float = 0.1, output_format: str = "3d"):
         super().__init__()
-        self.target_rate = target_rate
-        self.original_rate = original_rate
+        self.shift_fraction = float(np.clip(shift_fraction, 0.0, 0.999))
         self.output_format = output_format
-        self.downsampler = Downsample(target_rate, original_rate)
-    
+
     def prepare_data(
         self,
         g1: Dict,
         g0: Dict
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Downsample and truncate data."""
+        """Apply circular phase shift then truncate to T_min."""
         all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
         signals = self._extract_signals(all_tensors)
-        
-        print(f"\n[DownsampleTruncatePreprocessor] Downsampling "
-              f"{self.original_rate}Hz → {self.target_rate}Hz")
-        
-        # Downsample all sequences
-        downsampled = [self.downsampler.transform(self._to_numpy(s)) 
-                      for s in signals]
-        
-        # Find minimum length after downsampling
-        T_min = min(d.shape[0] for d in downsampled)
-        print(f"[DownsampleTruncatePreprocessor] Truncating to T_min = {T_min}")
-        
-        # Truncate from the end
-        truncated = [d[-T_min:] for d in downsampled]
-        X = np.stack(truncated, axis=0)
-        
-        # Scale
+
+        print(f"\n[PhaseShiftPreprocessor] shift_fraction={self.shift_fraction:.3f}")
+
+        shifted = []
+        for s in signals:
+            s_np = self._to_numpy(s)
+            T = s_np.shape[0]
+            n_shift = int(round(self.shift_fraction * T))
+            shifted.append(np.roll(s_np, n_shift, axis=0))
+
+        T_min = min(s.shape[0] for s in shifted)
+        print(f"[PhaseShiftPreprocessor] Truncating to T_min = {T_min}")
+
+        truncated = [s[-T_min:] for s in shifted]
+        X = np.stack(truncated, axis=0)  # (N, T_min, C)
+
         N, T, C = X.shape
-        X_2d = X.reshape(N * T, C)
-        X_scaled_2d = self.scaler.fit_transform(X_2d)
-        X_scaled = X_scaled_2d.reshape(N, T, C)
-        
-        # Format conversion
+        X_scaled = self.scaler.fit_transform(X.reshape(N * T, C)).reshape(N, T, C)
+
         if self.output_format == "channels_first":
             X_scaled = X_scaled.transpose(0, 2, 1)
-            print(f"[DownsampleTruncatePreprocessor] Output shape: {X_scaled.shape}")
+            print(f"[PhaseShiftPreprocessor] Output shape (channels-first): {X_scaled.shape}")
         else:
-            print(f"[DownsampleTruncatePreprocessor] Output shape: {X_scaled.shape}")
-        
+            print(f"[PhaseShiftPreprocessor] Output shape (3D): {X_scaled.shape}")
+
         return X_scaled, y, np.array(subject_ids)
 
 
