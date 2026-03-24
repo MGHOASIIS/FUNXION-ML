@@ -6,10 +6,26 @@ Paradigms:
 2. Rotator Cuff Tear (RCT) vs Controls
 3. Other Conditions vs Controls
 4. RCT vs Other Conditions
+
+Works with both data formats:
+  - Legacy:       key = subject_id         (e.g. "PX01", "fx01")
+  - Event-window: key = window_id          (e.g. "fx07_task4_trial1")
+Subject identity is always extracted via extract_subject_id(key).
 """
 from typing import Dict, Tuple
 import pandas as pd
 from config.paths import PATIENT_DETAILS
+
+
+def extract_subject_id(key: str) -> str:
+    """
+    Extract the subject identifier from a dict key.
+
+    Handles both formats:
+      - subject_id key : "PX01"              -> "PX01"
+      - window_id key  : "fx07_task4_trial1" -> "fx07"
+    """
+    return key.split('_')[0]
 
 
 class ParadigmSelector:
@@ -80,8 +96,8 @@ class ParadigmSelector:
             Data dictionaries for group 1 and group 0
         """
         # Apply global exclusions before any paradigm filtering
-        patient_data  = {k: v for k, v in patient_data.items()  if k not in self.EXCLUDE_G1}
-        control_data  = {k: v for k, v in control_data.items()  if k not in self.EXCLUDE_G0}
+        patient_data = {k: v for k, v in patient_data.items() if extract_subject_id(k) not in self.EXCLUDE_G1}
+        control_data = {k: v for k, v in control_data.items() if extract_subject_id(k) not in self.EXCLUDE_G0}
 
         excluded_g1 = [k for k in self.EXCLUDE_G1]
         excluded_g0 = [k for k in self.EXCLUDE_G0]
@@ -117,13 +133,12 @@ class ParadigmSelector:
         """Paradigm 2: RCT patients vs controls."""
         rct_data = {
             k: v for k, v in patient_data.items()
-            if k in self.rotator_cuff_ids
+            if extract_subject_id(k) in self.rotator_cuff_ids
         }
-        
-        # Filter controls to match RCT patients if needed
+
         filtered_controls = {
             k: v for k, v in control_data.items()
-            if (k.startswith('PX') and k in self.rotator_cuff_ids) or k.startswith('fx')
+            if extract_subject_id(k).startswith('fx')
         }
         
         print(f"Paradigm 2: RCT vs Controls")
@@ -139,13 +154,12 @@ class ParadigmSelector:
         """Paradigm 3: Non-RCT patients vs controls."""
         other_data = {
             k: v for k, v in patient_data.items()
-            if k not in self.rotator_cuff_ids
+            if extract_subject_id(k) not in self.rotator_cuff_ids
         }
-        
-        # Filter controls
+
         filtered_controls = {
             k: v for k, v in control_data.items()
-            if (k.startswith('PX') and k in self.rotator_cuff_ids) or k.startswith('fx')
+            if extract_subject_id(k).startswith('fx')
         }
         
         print(f"Paradigm 3: Other Conditions vs Controls")
@@ -160,11 +174,11 @@ class ParadigmSelector:
         """Paradigm 4: RCT vs other conditions."""
         rct_data = {
             k: v for k, v in patient_data.items()
-            if k in self.rotator_cuff_ids
+            if extract_subject_id(k) in self.rotator_cuff_ids
         }
         other_data = {
             k: v for k, v in patient_data.items()
-            if k not in self.rotator_cuff_ids
+            if extract_subject_id(k) not in self.rotator_cuff_ids
         }
         
         print(f"Paradigm 4: RCT vs Other Conditions")

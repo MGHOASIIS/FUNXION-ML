@@ -19,7 +19,7 @@ from pathlib import Path
 from datetime import datetime
 
 from config.constants import TASK_NAMES, PARADIGM_NAMES, CHAN_NAME
-from config.paths import get_pickled_dataset_path, EXPERIMENTS_DIR
+from config.paths import get_pickled_dataset_path, get_event_window_path, EXPERIMENTS_DIR
 from data.paradigms import ParadigmSelector
 from data.preprocessors import PreprocessorFactory, AugmentedPreprocessor
 from models.hmm_model import HMMModel
@@ -29,22 +29,41 @@ from models.transformer_model import TransformerModel
 from training.evaluator import ModelEvaluator, Visualizer
 
 def load_data(task: int):
-    """Load patient and control data for given task."""
+    """Load patient and control data for given task (legacy format)."""
     patient_path = get_pickled_dataset_path(task, "patient")
     control_path = get_pickled_dataset_path(task, "control")
-    
+
     with open(patient_path, "rb") as f:
         patient_data = pickle.load(f)
-    
+
     with open(control_path, "rb") as f:
         control_data = pickle.load(f)
-    
-    print(f"\n[Data Loaded]")
-    print(f"  Task: {TASK_NAMES.get(task, task)}")
-    print(f"  Patients: {len(patient_data)}")
-    print(f"  Controls: {len(control_data)}")
-    
+
+    print(f"\n[Data Loaded] legacy")
+    print(f"  Task:     {TASK_NAMES.get(task, task)}")
+    print(f"  Patients: {len(patient_data)} subjects")
+    print(f"  Controls: {len(control_data)} subjects")
+
     return patient_data, control_data
+
+
+def load_event_window_data(task: int):
+    """Load event-window data for given task (g0/g1 format, one entry per window)."""
+    g1_path = get_event_window_path(task, "g1")
+    g0_path = get_event_window_path(task, "g0")
+
+    with open(g1_path, "rb") as f:
+        g1_data = pickle.load(f)
+
+    with open(g0_path, "rb") as f:
+        g0_data = pickle.load(f)
+
+    print(f"\n[Data Loaded] event-window")
+    print(f"  Task:     {TASK_NAMES.get(task, task)}")
+    print(f"  g1 (patients): {len(g1_data)} windows")
+    print(f"  g0 (controls): {len(g0_data)} windows")
+
+    return g1_data, g0_data
 
 
 def create_model(model_type: str, checkpoints_dir=None, patience=None, min_delta=None, task=None, paradigm=None):
@@ -167,6 +186,16 @@ def main():
         description="Run XDash classification experiments with optional comprehensive diagnostics"
     )
     
+    # Data source
+    parser.add_argument(
+        "--data-source",
+        type=str,
+        default="subject",
+        choices=["subject", "event_window"],
+        help="'subject' uses patient/control_data_taskN.pkl (one array per subject); "
+             "'event_window' uses g0/g1_data_taskN.pkl (one array per window)"
+    )
+
     # Required arguments
     parser.add_argument(
         "-t",
@@ -415,9 +444,12 @@ def main():
     # LOAD DATA
     # ========================================================================
     
-    patient_data, control_data = load_data(args.task)
-    
-    # Select paradigm
+    if args.data_source == "event_window":
+        patient_data, control_data = load_event_window_data(args.task)
+    else:
+        patient_data, control_data = load_data(args.task)
+
+    # Select paradigm — works for both formats via extract_subject_id
     selector = ParadigmSelector()
     g1, g0 = selector.select_paradigm(
         patient_data=patient_data,

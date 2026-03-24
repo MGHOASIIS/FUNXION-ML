@@ -14,6 +14,7 @@ from sklearn.manifold import MDS, Isomap, TSNE
 from data.transforms import (
     Downsample, TimeJitter, TimeWarping, MagnitudeWarping
 )
+from data.paradigms import extract_subject_id
 
 
 class BasePreprocessor(ABC):
@@ -72,16 +73,16 @@ class BasePreprocessor(ABC):
         subject_ids = []
         
         # Group 1 (patients/condition of interest)
-        for idx, (k, tensor_data) in enumerate(g1.items()):
+        for k, tensor_data in g1.items():
             all_tensors.append(tensor_data)
             labels.append(1)
-            subject_ids.append(f"g1_{idx}_{k}")
-        
+            subject_ids.append(f"g1_{extract_subject_id(k)}")
+
         # Group 0 (controls/comparison group)
-        for idx, (k, tensor_data) in enumerate(g0.items()):
+        for k, tensor_data in g0.items():
             all_tensors.append(tensor_data)
             labels.append(0)
-            subject_ids.append(f"g0_{idx}_{k}")
+            subject_ids.append(f"g0_{extract_subject_id(k)}")
         
         return all_tensors, np.array(labels, dtype=np.int32), subject_ids
     
