@@ -160,15 +160,16 @@ submit_job() {
     [ -n "${FILTER_TASK}"     ] && [ "${TASK}"     != "${FILTER_TASK}"     ] && return
     [ -n "${FILTER_PARADIGM}" ] && [ "${PARADIGM}" != "${FILTER_PARADIGM}" ] && return
 
-    # DTW embedding produces fixed-size vectors, not sequences — incompatible with HMM
+    # DTW embedding incompatible with HMM regardless of data source
     if [ "${METHOD}" = "dtw_embedding" ] && [ "${MODEL}" = "hmm" ]; then
         [ "${DRY_RUN}" = true ] && echo "[SKIPPED] dtw_embedding incompatible with HMM — ${MODEL^^}_T${TASK}_P${PARADIGM}"
         return
     fi
 
-    # Padding causes NaN in HMM parameters (startprob_, transmat_) — incompatible
-    if [ "${METHOD}" = "padding" ] && [ "${MODEL}" = "hmm" ]; then
-        [ "${DRY_RUN}" = true ] && echo "[SKIPPED] padding incompatible with HMM — ${MODEL^^}_T${TASK}_P${PARADIGM}"
+    # Padding incompatible with HMM on subject data only
+    # (allowed for event_window since windows are short and bounded)
+    if [ "${METHOD}" = "padding" ] && [ "${MODEL}" = "hmm" ] && [ "${SRC}" = "subject" ]; then
+        [ "${DRY_RUN}" = true ] && echo "[SKIPPED] padding incompatible with HMM on subject data — ${MODEL^^}_T${TASK}_P${PARADIGM}"
         return
     fi
 

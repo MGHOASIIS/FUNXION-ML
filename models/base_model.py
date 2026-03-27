@@ -19,6 +19,7 @@ class ModelResults:
     y_pred: np.ndarray
     y_proba: np.ndarray
     X_shape: Tuple
+    subject_ids: Optional[np.ndarray] = None
     per_fold_results: Optional[Dict[str, Any]] = None
 
 

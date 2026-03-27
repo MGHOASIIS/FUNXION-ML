@@ -101,6 +101,73 @@ def create_model(model_type: str, checkpoints_dir=None, patience=None, min_delta
             paradigm=paradigm
         )
 
+def save_predictions(results, subject_ids, task: int, paradigm: int,
+                     model_name: str, method: str, save_dir: Path):
+    """
+    Save per-sample predictions to CSV.
+
+    For subject-level data each row = one subject.
+    For event-window data each row = one window, with the window identity
+    (subject, event phase) parsed from the subject_id key.
+
+    Columns:
+        subject_id    — raw key from preprocessor
+        subject       — extracted subject identifier (e.g. fx07, PX01)
+        window_desc   — event phase description if event_window, else ''
+        y_true        — ground truth label (0/1)
+        y_pred        — predicted label (0/1)
+        y_proba       — predicted probability for class 1
+        correct       — True if y_true == y_pred
+        error_type    — correct | false_positive | false_negative
+    """
+    import pandas as pd
+
+    sids = results.subject_ids if results.subject_ids is not None else subject_ids
+
+    rows = []
+    for sid, yt, yp, ypr in zip(sids, results.y_true, results.y_pred, results.y_proba):
+        sid_str = str(sid)
+
+        # Parse subject and window description
+        # event_window keys: "g1_0_fx07__win0__Jar_picked_up_to_Jar_put_down"
+        # subject keys:      "g1_0_PX01"
+        parts = sid_str.split("__", 1)
+        raw_subject = parts[0].split("_", 2)[-1] if "_" in parts[0] else parts[0]
+        window_desc = parts[1] if len(parts) > 1 else ""
+
+        correct    = int(yt) == int(yp)
+        if correct:
+            error_type = "correct"
+        elif int(yp) == 1:
+            error_type = "false_positive"
+        else:
+            error_type = "false_negative"
+
+        rows.append({
+            "subject_id":   sid_str,
+            "subject":      raw_subject,
+            "window_desc":  window_desc,
+            "y_true":       int(yt),
+            "y_pred":       int(yp),
+            "y_proba":      round(float(ypr), 4),
+            "correct":      correct,
+            "error_type":   error_type,
+        })
+
+    df = pd.DataFrame(rows)
+    filename = f"predictions_T{task}_P{paradigm}_{model_name}_{method}.csv"
+    filepath = save_dir / filename
+    df.to_csv(filepath, index=False)
+
+    n_correct = df["correct"].sum()
+    n_fp      = (df["error_type"] == "false_positive").sum()
+    n_fn      = (df["error_type"] == "false_negative").sum()
+    print(f"\n[Predictions Saved] {filepath}")
+    print(f"  Correct: {n_correct}/{len(df)}  |  FP: {n_fp}  |  FN: {n_fn}")
+
+    return df
+
+
 
 def save_results(results, task: int, paradigm: int, model_name: str, method: str, save_dir: Path):
     """Save results to JSON file."""
@@ -477,6 +544,7 @@ def main():
         model_type=args.model,
         resample_rate=args.freq,
         original_rate=50,
+        data_source=args.data_source,
         **preproc_kwargs
     )
 
@@ -503,15 +571,13 @@ def main():
                         paradigm=args.paradigm
                         )
 
-    # HMM + padding is numerically unstable regardless of covariance type —
-    # zero-padded regions cause NaN in startprob_ / transmat_ because padded
-    # states are never visited during training. Use variable_length instead.
-    if args.model.lower() == "hmm" and args.method == "padding":
+    # HMM + padding on subject data is numerically unstable — zero-padded regions
+    # cause NaN in startprob_/transmat_. Allowed for event_window data since
+    # windows are short and bounded so padding regions are small.
+    if args.model.lower() == "hmm" and args.method == "padding" and args.data_source == "subject":
         raise ValueError(
-            "HMM + padding is not supported. Zero-padded regions cause NaN "
-            "in HMM parameters (startprob_, transmat_) because padded states "
-            "are never visited during training. Use --method variable_length "
-            "with HMM instead."
+            "HMM + padding is not supported for subject-level data. "
+            "Use --method variable_length or --data-source event_window."
         )
 
     results = model.fit(
@@ -565,6 +631,16 @@ def main():
     
     results_dict = save_results(
         results=results,
+        task=args.task,
+        paradigm=args.paradigm,
+        model_name=args.model.upper(),
+        method=args.method,
+        save_dir=results_dir
+    )
+
+    save_predictions(
+        results=results,
+        subject_ids=subject_ids,
         task=args.task,
         paradigm=args.paradigm,
         model_name=args.model.upper(),
