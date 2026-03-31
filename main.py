@@ -23,27 +23,28 @@ from config.paths import get_pickled_dataset_path, get_event_window_path, EXPERI
 from data.paradigms import ParadigmSelector
 from data.preprocessors import PreprocessorFactory, AugmentedPreprocessor
 from models.hmm_model import HMMModel
+from models.hsmm_model import HSMMModel
 from models.cnn_model import CNNModel
 from models.rnn_model import RNNModel
 from models.transformer_model import TransformerModel
 from training.evaluator import ModelEvaluator, Visualizer
 
 def load_data(task: int):
-    """Load patient and control data for given task (legacy format)."""
+    """Load patient and control data for given task."""
     patient_path = get_pickled_dataset_path(task, "patient")
     control_path = get_pickled_dataset_path(task, "control")
-
+    
     with open(patient_path, "rb") as f:
         patient_data = pickle.load(f)
-
+    
     with open(control_path, "rb") as f:
         control_data = pickle.load(f)
-
-    print(f"\n[Data Loaded] legacy")
-    print(f"  Task:     {TASK_NAMES.get(task, task)}")
-    print(f"  Patients: {len(patient_data)} subjects")
-    print(f"  Controls: {len(control_data)} subjects")
-
+    
+    print(f"\n[Data Loaded]")
+    print(f"  Task: {TASK_NAMES.get(task, task)}")
+    print(f"  Patients: {len(patient_data)}")
+    print(f"  Controls: {len(control_data)}")
+    
     return patient_data, control_data
 
 
@@ -74,6 +75,12 @@ def create_model(model_type: str, checkpoints_dir=None, patience=None, min_delta
         return HMMModel(
             checkpoints_dir=checkpoints_dir, 
             task=task, 
+            paradigm=paradigm
+        )
+    elif model_type == "hsmm":
+        return HSMMModel(
+            checkpoints_dir=checkpoints_dir,
+            task=task,
             paradigm=paradigm
         )
     elif model_type == "cnn":
@@ -253,16 +260,6 @@ def main():
         description="Run XDash classification experiments with optional comprehensive diagnostics"
     )
     
-    # Data source
-    parser.add_argument(
-        "--data-source",
-        type=str,
-        default="subject",
-        choices=["subject", "event_window"],
-        help="'subject' uses patient/control_data_taskN.pkl (one array per subject); "
-             "'event_window' uses g0/g1_data_taskN.pkl (one array per window)"
-    )
-
     # Required arguments
     parser.add_argument(
         "-t",
@@ -287,8 +284,8 @@ def main():
         "--model",
         type=str,
         required=True,
-        choices=["hmm", "cnn", "rnn", "transformer"],
-        help="Model type"
+        choices=["hmm", "hsmm", "cnn", "rnn", "transformer"],
+        help="Model type ('hsmm' = Hidden Semi-Markov Model, ablation comparison for HMM)"
     )
     
     # Preprocessing arguments
@@ -298,7 +295,7 @@ def main():
         type=str,
         default="truncate",
         choices=["truncate", "sliding_window", "padding", "dtw_embedding",
-                 "variable_length", "phase_shift"],
+                 "downsample_truncate", "variable_length"],
         help="Preprocessing method ('variable_length' recommended for HMM — "
              "no truncation, each subject keeps their full recording)"
     )
@@ -316,6 +313,21 @@ def main():
         type=float,
         default=0.30,
         help="Overlap for sliding_window method (default: 0.30)"
+    )
+    
+    # downsample truncating arguments
+    parser.add_argument(
+        "--target-rate",
+        type=int,
+        default=25,
+        help="Target sampling rate for downsample_truncate method (default: 25 Hz)"
+    )
+    
+    parser.add_argument(
+        "--original-rate",
+        type=int,
+        default=50,
+        help="Original sampling rate for downsample_truncate method (default: 50 Hz)"
     )
     
     # dtw_embedding arguments
@@ -419,13 +431,13 @@ def main():
         help="Save model checkpoints during training"
     )
 
-    # HMM-specific analysis arguments
+    # HMM / HSMM -specific analysis arguments
     parser.add_argument(
         "--hmm-csv-dir",
         type=str,
         default=None,
         help="Directory containing consolidated_task{N}.csv event files "
-             "for HMM state-to-event alignment (used with --diagnostics --model hmm)"
+             "for HMM/HSMM state-to-event alignment (used with --diagnostics --model hmm/hsmm)"
     )
     
     args = parser.parse_args()
@@ -471,6 +483,9 @@ def main():
     if args.method == "sliding_window":
         print(f"  Window:   {args.window_size}")
         print(f"  Overlap:  {args.overlap:.1%}")
+    elif args.method == "downsample_truncate":
+        print(f"  Original: {args.original_rate} Hz")
+        print(f"  Target:   {args.target_rate} Hz")
     elif args.method == "dtw_embedding":
         print(f"  Components: {args.n_components}")
         print(f"  Method:     {args.dtw_method}")
@@ -494,14 +509,7 @@ def main():
         'model': args.model,
         'method': args.method,
         'timestamp': timestamp,
-        'diagnostics_enabled': args.diagnostics,
-        # method-specific hyperparameters (None when not applicable)
-        'window_size':    args.window_size    if args.method == "sliding_window"     else None,
-        'overlap':        args.overlap        if args.method == "sliding_window"     else None,
-        'n_components':   args.n_components   if args.method == "dtw_embedding"      else None,
-        'dtw_method':     args.dtw_method     if args.method == "dtw_embedding"      else None,
-        'shift_fraction': args.shift_fraction if args.method == "phase_shift" else None,
-        'freq':           args.freq,
+        'diagnostics_enabled': args.diagnostics
     }
     
     with open(experiment_dir / "config.json", 'w') as f:
@@ -533,6 +541,9 @@ def main():
     if args.method == "sliding_window":
         preproc_kwargs["window_size"] = args.window_size
         preproc_kwargs["overlap"] = args.overlap
+    elif args.method == "downsample_truncate":
+        preproc_kwargs["target_rate"] = args.target_rate
+        preproc_kwargs["original_rate"] = args.original_rate
     elif args.method == "dtw_embedding":
         preproc_kwargs["n_components"] = args.n_components
         preproc_kwargs["dtw_method"] = args.dtw_method
@@ -571,20 +582,11 @@ def main():
                         paradigm=args.paradigm
                         )
 
-    # HMM + padding on subject data is numerically unstable — zero-padded regions
-    # cause NaN in startprob_/transmat_. Allowed for event_window data since
-    # windows are short and bounded so padding regions are small.
-    if args.model.lower() == "hmm" and args.method == "padding" and args.data_source == "subject":
-        raise ValueError(
-            "HMM + padding is not supported for subject-level data. "
-            "Use --method variable_length or --data-source event_window."
-        )
-
     results = model.fit(
         g1=g1,
         g0=g0,
         preprocessor=preprocessor,
-        paradigm=args.paradigm,
+        paradigm=args.paradigm
     )
     
     # ========================================================================
@@ -658,138 +660,149 @@ def main():
         print("RUNNING COMPREHENSIVE DIAGNOSTICS")
         print(f"{'='*70}\n")
 
-        if args.model.lower() == "hmm":
+        if args.model.lower() in ("hmm", "hsmm"):
+            # ── HMM / HSMM post-processing interpretability analysis ──────────
+            # Both models share identical Phase-2 analysis methods.
+            # The only HSMM-exclusive addition is plot_duration_distributions(),
+            # which visualises the fitted Poisson sojourn-time parameters —
+            # the key comparison point for the ablation section of the paper.
+            is_hsmm = args.model.lower() == "hsmm"
+            tag     = "HSMM" if is_hsmm else "HMM"
+
+            print(f"[{tag} Diagnostics] Running interpretability analysis ...")
+
+            from sklearn.preprocessing import StandardScaler
+            import numpy as np
+
+            seq_sids = [str(sid).split("_", 2)[-1] for sid in subject_ids]
+
+            # Resolve fitted model attributes (hmm uses fitted_hmm0/1,
+            # hsmm uses fitted_hsmm0/1)
+            fitted0 = model.fitted_hsmm0 if is_hsmm else model.fitted_hmm0
+            fitted1 = model.fitted_hsmm1 if is_hsmm else model.fitted_hmm1
+
+            # Emission distributions
+            model.plot_emission_distributions(
+                model=fitted1, channel_names=CHAN_NAME,
+                title_suffix=f"Patient — Task {args.task} P{args.paradigm}",
+                save_path=diagnostics_dir / "emissions_patient.png"
+            )
+            model.plot_emission_distributions(
+                model=fitted0, channel_names=CHAN_NAME,
+                title_suffix=f"Control — Task {args.task} P{args.paradigm}",
+                save_path=diagnostics_dir / "emissions_control.png"
+            )
+
+            # Transition matrices
+            model.plot_transition_matrix(
+                model=fitted1,
+                title_suffix=f"Patient — Task {args.task} P{args.paradigm}",
+                save_path=diagnostics_dir / "transition_patient.png"
+            )
+            model.plot_transition_matrix(
+                model=fitted0,
+                title_suffix=f"Control — Task {args.task} P{args.paradigm}",
+                save_path=diagnostics_dir / "transition_control.png"
+            )
+
+            # HSMM-exclusive: Poisson duration distribution comparison
+            if is_hsmm:
+                model.plot_duration_distributions(
+                    save_path=diagnostics_dir / "duration_distributions.png"
+                )
+
+            # State-specific feature importance
+            global_imp, state_imp = model.compute_state_specific_importance(
+                model=fitted1, channel_names=CHAN_NAME
+            )
+            model.plot_state_importance_heatmap(
+                state_importance=state_imp, channel_names=CHAN_NAME,
+                title=f"{tag} State Feature Importance (Patient) T{args.task} P{args.paradigm}",
+                save_path=diagnostics_dir / "state_importance_patient.png"
+            )
+            global_imp_ctrl, state_imp_ctrl = model.compute_state_specific_importance(
+                model=fitted0, channel_names=CHAN_NAME
+            )
+            model.plot_state_importance_heatmap(
+                state_importance=state_imp_ctrl, channel_names=CHAN_NAME,
+                title=f"{tag} State Feature Importance (Control) T{args.task} P{args.paradigm}",
+                save_path=diagnostics_dir / "state_importance_control.png"
+            )
+
+            # Patient vs control emission comparison
             try:
-                print("[HMM Diagnostics] Running HMM interpretability analysis ...")
+                model.compare_patient_control_emissions(
+                    channel_names=CHAN_NAME,
+                    save_path=diagnostics_dir / "emission_diff.png"
+                )
+            except ValueError as e:
+                print(f"  Emission comparison skipped — {e}")
 
-                from sklearn.preprocessing import StandardScaler
-                import numpy as np
+            # Decode + plot state sequence for first patient and first control
+            _event_csv = Path(args.hmm_csv_dir) / f"consolidated_task{args.task}.csv" \
+                         if (hasattr(args, "hmm_csv_dir") and args.hmm_csv_dir) else None
 
-                seq_sids = [str(sid).split("_", 2)[-1] for sid in subject_ids]
-
-                # Emission distributions
-                model.plot_emission_distributions(
-                    model=model.fitted_hmm1, channel_names=CHAN_NAME,
-                    title_suffix=f"Patient — Task {args.task} P{args.paradigm}",
-                    save_path=diagnostics_dir / "emissions_patient.png"
-                )
-                model.plot_emission_distributions(
-                    model=model.fitted_hmm0, channel_names=CHAN_NAME,
-                    title_suffix=f"Control — Task {args.task} P{args.paradigm}",
-                    save_path=diagnostics_dir / "emissions_control.png"
-                )
-
-                # Transition matrices
-                model.plot_transition_matrix(
-                    model=model.fitted_hmm1,
-                    title_suffix=f"Patient — Task {args.task} P{args.paradigm}",
-                    save_path=diagnostics_dir / "transition_patient.png"
-                )
-                model.plot_transition_matrix(
-                    model=model.fitted_hmm0,
-                    title_suffix=f"Control — Task {args.task} P{args.paradigm}",
-                    save_path=diagnostics_dir / "transition_control.png"
-                )
-
-                # State-specific feature importance
-                global_imp, state_imp = model.compute_state_specific_importance(
-                    model=model.fitted_hmm1, channel_names=CHAN_NAME
-                )
-                model.plot_state_importance_heatmap(
-                    state_importance=state_imp, channel_names=CHAN_NAME,
-                    title=f"State Feature Importance (Patient) T{args.task} P{args.paradigm}",
-                    save_path=diagnostics_dir / "state_importance_patient.png"
-                )
-                global_imp_ctrl, state_imp_ctrl = model.compute_state_specific_importance(
-                    model=model.fitted_hmm0, channel_names=CHAN_NAME
-                )
-                model.plot_state_importance_heatmap(
-                    state_importance=state_imp_ctrl, channel_names=CHAN_NAME,
-                    title=f"State Feature Importance (Control) T{args.task} P{args.paradigm}",
-                    save_path=diagnostics_dir / "state_importance_control.png"
-                )
-
-                # Patient vs control emission comparison
-                try:
-                    model.compare_patient_control_emissions(
-                        channel_names=CHAN_NAME,
-                        save_path=diagnostics_dir / "emission_diff.png"
+            for i, (seq_s, sid, lbl) in enumerate(zip(X, seq_sids, y)):
+                if i == 0 or (lbl == 0 and all(y[:i] == 1)):
+                    group = "patient" if lbl == 1 else "control"
+                    states, _, _ = model.decode_sequence(
+                        seq_s, fitted1, sampling_rate=50
                     )
-                except ValueError as e:
-                    print(f"  Emission comparison skipped — {e}")
+                    events_for_plot = None
+                    if _event_csv and _event_csv.exists():
+                        try:
+                            events_for_plot = model.load_event_markers(
+                                csv_path=_event_csv,
+                                subject_id=sid,
+                                task_id=args.task,
+                                relative_timestamps=True
+                            )
+                        except Exception as _e:
+                            print(f"    [{sid}] events not loaded: {_e}")
 
-                # Decode + plot state sequence for first patient and first control
-                _event_csv = Path(args.hmm_csv_dir) / f"consolidated_task{args.task}.csv" \
-                             if (hasattr(args, "hmm_csv_dir") and args.hmm_csv_dir) else None
+            # Event alignment — only if CSV dir is provided via --hmm-csv-dir
+            if hasattr(args, "hmm_csv_dir") and args.hmm_csv_dir:
+                csv_path = Path(args.hmm_csv_dir) / f"consolidated_task{args.task}.csv"
+                if csv_path.exists():
+                    model.run_alignment_analysis(
+                        sequences=X,
+                        subject_ids=seq_sids,
+                        csv_path=csv_path,
+                        task_id=args.task,
+                        paradigm_id=args.paradigm,
+                        tolerance_s=0.5,
+                        sampling_rate=50,
+                        save_path=diagnostics_dir / f"alignment_T{args.task}_P{args.paradigm}.csv"
+                    )
+                else:
+                    print(f"  Event CSV not found at {csv_path} — alignment skipped")
 
-                for i, (seq_s, sid, lbl) in enumerate(zip(X, seq_sids, y)):
-                    if i == 0 or (lbl == 0 and all(y[:i] == 1)):
-                        states, _, _ = model.decode_sequence(
-                            seq_s, model.fitted_hmm1, sampling_rate=50
-                        )
-                        events_for_plot = None
-                        if _event_csv and _event_csv.exists():
-                            try:
-                                events_for_plot = model.load_event_markers(
-                                    csv_path=_event_csv,
-                                    subject_id=sid,
-                                    task_id=args.task,
-                                    relative_timestamps=True
-                                )
-                            except Exception as _e:
-                                print(f"    [{sid}] events not loaded: {_e}")
-
-                # Event alignment
-                if hasattr(args, "hmm_csv_dir") and args.hmm_csv_dir:
-                    csv_path = Path(args.hmm_csv_dir) / f"consolidated_task{args.task}.csv"
-                    if csv_path.exists():
-                        model.run_alignment_analysis(
-                            sequences=X,
-                            subject_ids=seq_sids,
-                            csv_path=csv_path,
-                            task_id=args.task,
-                            paradigm_id=args.paradigm,
-                            tolerance_s=0.5,
-                            sampling_rate=50,
-                            save_path=diagnostics_dir / f"alignment_T{args.task}_P{args.paradigm}.csv"
-                        )
-                    else:
-                        print(f"  Event CSV not found at {csv_path} — alignment skipped")
-
-                diagnostic_results = {
-                    "hmm_analysis": {
-                        "n_components":           results.best_params.get("n_components", 2),
-                        "covariance_type":        results.best_params.get("covariance_type", "diag"),
-                        "param_source":           "loo_cv_best_params",
-                        "global_importance":      global_imp,
-                        "global_importance_ctrl": global_imp_ctrl,
-                    }
+            diagnostic_results = {
+                f"{args.model.lower()}_analysis": {
+                    "n_components":           results.best_params.get("n_components", 2),
+                    "covariance_type":        results.best_params.get("covariance_type", "diag"),
+                    "param_source":           "loo_cv_best_params",
+                    "global_importance":      global_imp,
+                    "global_importance_ctrl": global_imp_ctrl,
                 }
-                print(f"\n[HMM Diagnostics] Complete — outputs in {diagnostics_dir}")
-
-            except Exception as e:
-                print(f"\n[HMM Diagnostics] WARNING: diagnostics failed — {e}")
-                print("[HMM Diagnostics] Continuing to save summary.json...")
+            }
+            print(f"\n[{tag} Diagnostics] Complete — outputs in {diagnostics_dir}")
 
         else:
-            # ── CNN / RNN / Transformer diagnostics ──────────────────────────
-            try:
-                from comprehensive_monitor import run_complete_monitoring
-                import numpy as np
-                diagnostic_results = run_complete_monitoring(
-                    model=model,
-                    X=X,
-                    y=y,
-                    subject_ids=subject_ids,
-                    fold_results=results.per_fold_results,
-                    experiment_name=experiment_name,
-                    save_dir=diagnostics_dir,
-                    hyperparameters=results.best_params,
-                    feature_names=CHAN_NAME
-                )
-            except Exception as e:
-                print(f"\n[Diagnostics] WARNING: diagnostics failed — {e}")
-                print("[Diagnostics] Continuing to save summary.json...")
+            # ── CNN / RNN / Transformer diagnostics (unchanged) ───────────────
+            from utils.comprehensive_monitor import run_complete_monitoring
+            import numpy as np
+            diagnostic_results = run_complete_monitoring(
+                model=model,
+                X=X,
+                y=y,
+                subject_ids=subject_ids,
+                fold_results=results.per_fold_results,
+                experiment_name=experiment_name,
+                save_dir=diagnostics_dir,
+                hyperparameters=results.best_params,
+                feature_names=CHAN_NAME
+            )
     
     # ========================================================================
     # SAVE SUMMARY
@@ -800,10 +813,10 @@ def main():
         'config': config,
         'results': results_dict,
         'evaluation': {
-            'accuracy':           float(eval_results.accuracy),
-            'balanced_accuracy':  float(eval_results.balanced_accuracy),
-            'auc_roc':            float(eval_results.auc_roc),
-            'auc_roc_ci':         [float(v) for v in eval_results.auc_roc_ci],
+            'accuracy':           getattr(eval_results, 'accuracy', None),
+            'balanced_accuracy':  getattr(eval_results, 'balanced_accuracy', None),
+            'auc_roc':            getattr(eval_results, 'auc_roc', None),
+            'auc_roc_ci':         getattr(eval_results, 'auc_roc_ci', None),
         }
     }
     

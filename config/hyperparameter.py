@@ -7,6 +7,13 @@ if IS_TEST:
         "n_iter":          [1],
     }
 
+    HSMM_PARAM_GRID = {
+        "covariance_type": ["diag"],
+        "n_components":    [2],
+        "n_iter":          [100],
+        "max_duration":    [100],
+    }
+
     CNN_PARAM_GRID = {
         "conv_channels":  [[32, 64, 64]],
         "kernel_sizes":   [[7, 5, 3]],
@@ -103,4 +110,11 @@ else:
         "weight_decay":    [1e-4, 1e-2],
         "batch_size":      [32],
         "epochs":          [50],
+    }
+
+    HSMM_PARAM_GRID = {
+        "covariance_type": ["diag"],
+        "n_components":    [2, 3, 4, 5],
+        "n_iter":          [100],
+        "max_duration":    [100, 200],
     }

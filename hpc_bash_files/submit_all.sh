@@ -1,24 +1,27 @@
 #!/bin/bash
 # =============================================================================
 # submit_all.sh
-# Submits all 96 experiments (6 tasks × 4 paradigms × 4 models) as independent
+# Submits all 120 experiments (6 tasks × 4 paradigms × 5 models) as independent
 # SLURM jobs. Each job runs in parallel — all are queued at once.
 #
 # Per-model defaults (hardcoded in run_single.sh):
 #   HMM         → variable_length, --diagnostics, --save-checkpoints,
 #                 --hmm-csv-dir data/events/
+#   HSMM        → variable_length, --diagnostics, --save-checkpoints,
+#                 --hmm-csv-dir data/events/  (mirrors HMM; O(T²) → 96h limit)
 #   CNN/RNN/TR  → truncate, --diagnostics, --save-checkpoints
 #
 # Usage:
-#   bash submit_all.sh                    # submit all 96
-#   bash submit_all.sh --dry-run          # preview without submitting
-#   bash submit_all.sh --model hmm        # submit only HMM jobs (24 jobs)
-#   bash submit_all.sh --task 1           # submit only task 1 (16 jobs)
-#   bash submit_all.sh --task 1 --paradigm 1 --model hmm   # single job
+#   bash submit_all.sh                     # submit all 120
+#   bash submit_all.sh --dry-run           # preview without submitting
+#   bash submit_all.sh --model hmm         # submit only HMM jobs (24 jobs)
+#   bash submit_all.sh --model hsmm        # submit only HSMM jobs (24 jobs)
+#   bash submit_all.sh --task 1            # submit only task 1 (20 jobs)
+#   bash submit_all.sh --task 1 --paradigm 1 --model hsmm   # single job
 #
 # Options:
 #   --dry-run       Print sbatch commands without submitting
-#   --model MODEL   Filter by model (hmm | cnn | rnn | transformer)
+#   --model MODEL   Filter by model (hmm | hsmm | cnn | rnn | transformer)
 #   --task TASK     Filter by task (1–6)
 #   --paradigm P    Filter by paradigm (1–4)
 # =============================================================================
@@ -61,7 +64,7 @@ mkdir -p "${LOG_DIR}"
 # ── Define experiment space ───────────────────────────────────────────────────
 TASKS=(1 2 3 4 5 6)
 PARADIGMS=(1 2 3 4)
-MODELS=(hmm cnn rnn transformer)
+MODELS=(hmm hsmm cnn rnn transformer)
 
 TASK_NAMES=([1]="jar_opening" [2]="key_turning" [3]="cleaning" [4]="back_washing" [5]="cutting" [6]="hammering")
 PARADIGM_NAMES=([1]="patients_vs_controls" [2]="rct_vs_controls" [3]="other_vs_controls" [4]="rct_vs_other")
@@ -122,6 +125,13 @@ for MODEL in "${MODELS[@]}"; do
                     MEMORY="32G"
                     PARTITION="short"
                     ;;
+                hsmm)
+                    # HSMM Viterbi/forward is O(T²) — allow ~2× HMM wall time.
+                    # CPU-only (no GPU needed), same memory as HMM.
+                    TIME_LIMIT="96:00:00"
+                    MEMORY="32G"
+                    PARTITION="short"
+                    ;;
                 transformer)
                     TIME_LIMIT="08:00:00"
                     MEMORY="64G"
@@ -146,8 +156,8 @@ for MODEL in "${MODELS[@]}"; do
                 --mail-user=singh.vishwa@northeastern.edu
             )
 
-            # GPU models get a GPU allocation; HMM is CPU-only
-            if [ "${MODEL}" != "hmm" ]; then
+            # GPU models get a GPU allocation; HMM and HSMM are CPU-only
+            if [ "${MODEL}" != "hmm" ] && [ "${MODEL}" != "hsmm" ]; then
                 SBATCH_CMD+=(--gres=gpu:1)
             fi
 
