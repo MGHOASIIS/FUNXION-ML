@@ -15,6 +15,7 @@ Subject identity is always extracted via extract_subject_id(key).
 from typing import Dict, Tuple
 import pandas as pd
 from config.paths import PATIENT_DETAILS
+from config.constants import EXCLUDED_G1, EXCLUDED_G0
 
 
 def extract_subject_id(key: str) -> str:
@@ -68,9 +69,6 @@ class ParadigmSelector:
             f"Please check that the file is the correct xdash_px_details.xlsx."
         )
     
-    # Subjects to exclude from all paradigms
-    EXCLUDE_G1 = {"PX20"}
-    EXCLUDE_G0 = {"fx20"}
 
     def select_paradigm(
         self,

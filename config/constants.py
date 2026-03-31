@@ -53,3 +53,7 @@ FEATURE_FILTER_NAMES = {
     4: "sliding_window",
     5: "phase_shift",
 }
+
+# Subjects to exclude from all paradigms
+EXCLUDE_G1 = {"PX20"}
+EXCLUDE_G0 = {"fx20"}

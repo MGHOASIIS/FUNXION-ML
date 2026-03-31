@@ -12,18 +12,25 @@ EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
 PATIENT_DETAILS = DATA_DIR / "xdash_px_details.xlsx"
 
 def get_pickled_dataset_path(task: int, data_type: str) -> Path:
-    """Get path to legacy pickled dataset (one array per subject)."""
+    """Get path to pickled dataset."""
     return DATA_DIR / "pickled_datasets" / f"{data_type}_data_task{task}.pkl"
 
 
 def get_event_window_path(task: int, group: str) -> Path:
     """
-    Get path to event-window pickled dataset (one array per window).
+    Get path to pre-generated event-window pickled dataset.
 
     Parameters
     ----------
-    task  : int   — task number (1-6)
-    group : str   — 'g0' (controls) or 'g1' (patients)
+    task : int
+        Task number (1–6)
+    group : str
+        'g1' (patients / condition group) or 'g0' (controls)
+
+    Returns
+    -------
+    Path
+        e.g. data/pickled_datasets/event_windows/g1_data_task1.pkl
     """
     return DATA_DIR / "pickled_datasets" / "event_window" / f"{group}_data_task{task}.pkl"
 

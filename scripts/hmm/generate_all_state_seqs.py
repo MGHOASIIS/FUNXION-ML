@@ -99,6 +99,9 @@ def parse_args():
                    help="Sampling rate in Hz (default: 50)")
     p.add_argument("--skip-existing", action="store_true",
                    help="Skip T/P combinations whose output folder already exists")
+    p.add_argument("--min-run-s", type=float, default=1.0,
+                   help="Runs shorter than this (seconds) are candidates for merging into "
+                        "fluctuation states labelled 'i+j' (default: 1.0 s = 50 frames @ 50Hz)")
     return p.parse_args()
 
 
@@ -213,11 +216,97 @@ def preprocess(g1: dict, g0: dict):
     return X, np.array(labels), sids
 
 
+# ── State-segment / transition helpers ───────────────────────────────────────
+
+def _run_length_encode(states: np.ndarray) -> list[dict]:
+    """Return list of {state, start, end} (end is exclusive)."""
+    runs = []
+    i = 0
+    while i < len(states):
+        s = int(states[i])
+        j = i
+        while j < len(states) and int(states[j]) == s:
+            j += 1
+        runs.append({"state": s, "start": i, "end": j})
+        i = j
+    return runs
+
+
+def compute_state_segments(states: np.ndarray,
+                            sampling_rate: int,
+                            min_run_frames: int) -> list[dict]:
+    """
+    Convert a raw state sequence into a list of annotated segments.
+
+    Rapid-fluctuation merging
+    -------------------------
+    Consecutive runs that are each shorter than *min_run_frames* frames are
+    grouped into a single "fluctuation" segment.  The state label for that
+    segment is the sorted, '+'-joined set of states involved, e.g. "0+1".
+
+    Returns
+    -------
+    List of dicts, one per segment:
+        start_frame  – first frame index (inclusive)
+        end_frame    – last frame index (inclusive)
+        start_s      – start time in seconds
+        end_s        – end time in seconds
+        duration_s   – segment duration in seconds
+        state        – state label (int as str, or "i+j" for fluctuations)
+        from_state   – state label of the preceding segment (None for first)
+        to_state     – state label of the following segment (None for last)
+    """
+    runs = _run_length_encode(states)
+
+    # Merge short consecutive runs into fluctuation blocks
+    merged: list[dict] = []
+    i = 0
+    while i < len(runs):
+        run_len = runs[i]["end"] - runs[i]["start"]
+        if run_len < min_run_frames:
+            # Collect all adjacent short runs
+            fluct = [runs[i]]
+            j = i + 1
+            while j < len(runs) and (runs[j]["end"] - runs[j]["start"]) < min_run_frames:
+                fluct.append(runs[j])
+                j += 1
+            if len(fluct) > 1:
+                involved = sorted({r["state"] for r in fluct})
+                label = "+".join(str(s) for s in involved)
+                merged.append({
+                    "state": label,
+                    "start": fluct[0]["start"],
+                    "end":   fluct[-1]["end"],
+                })
+                i = j
+                continue
+        merged.append(runs[i])
+        i += 1
+
+    # Build output rows with from/to annotation
+    segments = []
+    for k, seg in enumerate(merged):
+        sf = seg["start"]
+        ef = seg["end"] - 1  # inclusive
+        state_label = str(seg["state"])
+        segments.append({
+            "start_frame": sf,
+            "end_frame":   ef,
+            "start_s":     round(sf / sampling_rate, 3),
+            "end_s":       round(ef / sampling_rate, 3),
+            "duration_s":  round((ef - sf + 1) / sampling_rate, 3),
+            "state":       state_label,
+            "from_state":  str(merged[k - 1]["state"]) if k > 0 else None,
+            "to_state":    str(merged[k + 1]["state"]) if k < len(merged) - 1 else None,
+        })
+    return segments
+
+
 # ── Per T/P runner ────────────────────────────────────────────────────────────
 
 def run_one(task: int, paradigm: int, ckpt_path: Path,
             out_root: Path, csv_dir: Path | None,
-            sampling_rate: int) -> dict:
+            sampling_rate: int, min_run_frames: int) -> dict:
     """
     Generate state sequence plots for one task/paradigm combination.
     Returns a dict with summary statistics.
@@ -280,6 +369,7 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
 
     # Decode and plot every subject
     summary_rows = []
+    transition_rows = []
 
     for i, (seq, label, sid) in enumerate(zip(X, y, sids)):
         is_g1  = (label == 1)
@@ -344,6 +434,17 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
         summary_rows.append(row)
         print(f"✓  {total_s:.0f}s | {n_trans} trans | {' '.join(state_pct_str)}")
 
+        # State segments / transitions CSV
+        segments = compute_state_segments(states, sampling_rate, min_run_frames)
+        for seg in segments:
+            transition_rows.append({
+                "task":        task,
+                "paradigm":    paradigm,
+                "subject_id":  clean_sid,
+                "group":       group,
+                **seg,
+            })
+
     # Summary CSV
     df = pd.DataFrame(summary_rows)
     df_sorted = pd.concat([
@@ -351,6 +452,13 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
         df[df["group"] == g0_name].sort_values("subject_id"),
     ])
     df_sorted.to_csv(out_dir / "summary.csv", index=False)
+
+    # Transitions CSV
+    trans_df = pd.DataFrame(transition_rows)
+    trans_df.to_csv(out_dir / "transitions.csv", index=False)
+    print(f"  transitions.csv: {len(trans_df)} segments  "
+          f"(fluctuation threshold: {min_run_frames} frames = "
+          f"{min_run_frames/sampling_rate:.1f}s)")
 
     # Group stats
     # Build stats with all available stateN_pct columns
@@ -421,6 +529,7 @@ def main():
                 out_root=out_root,
                 csv_dir=csv_dir,
                 sampling_rate=args.sampling_rate,
+                min_run_frames=int(args.min_run_s * args.sampling_rate),
             )
             results.append(result)
         except Exception as e:
@@ -448,16 +557,24 @@ def main():
 
     # Master summary across all T/P
     if results:
-        all_summaries = []
+        all_summaries, all_transitions = [], []
         for r in results:
-            csv_path = Path(r["out_dir"]) / "summary.csv"
-            if csv_path.exists():
-                all_summaries.append(pd.read_csv(csv_path))
+            s_path = Path(r["out_dir"]) / "summary.csv"
+            t_path = Path(r["out_dir"]) / "transitions.csv"
+            if s_path.exists():
+                all_summaries.append(pd.read_csv(s_path))
+            if t_path.exists():
+                all_transitions.append(pd.read_csv(t_path))
         if all_summaries:
             master = pd.concat(all_summaries, ignore_index=True)
             master_path = out_root / "master_summary.csv"
             master.to_csv(master_path, index=False)
-            print(f"\n  Master summary: {master_path}  ({len(master)} rows)")
+            print(f"\n  Master summary:     {master_path}  ({len(master)} rows)")
+        if all_transitions:
+            master_t = pd.concat(all_transitions, ignore_index=True)
+            master_t_path = out_root / "master_transitions.csv"
+            master_t.to_csv(master_t_path, index=False)
+            print(f"  Master transitions: {master_t_path}  ({len(master_t)} rows)")
 
     print(f"{'='*65}\n")
 

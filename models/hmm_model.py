@@ -254,9 +254,10 @@ class HMMModel(BaseModel):
                 'feature_importance': feature_imp,
                 'input_shape':      [len(X), int(X[0].shape[1])],
                 'predictions': {
-                    'y_true':  y_true.tolist(),
-                    'y_pred':  y_pred.tolist(),
-                    'y_proba': y_proba.tolist()
+                    'y_true':       y_true.tolist(),
+                    'y_pred':       y_pred.tolist(),
+                    'y_proba':      y_proba.tolist(),
+                    'subject_ids':  subject_ids.tolist() if subject_ids is not None else [],
                 },
                 'timestamp': datetime.now().isoformat()
             }, f, indent=2)
