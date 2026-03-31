@@ -16,13 +16,14 @@
 #   $6  EXTRA_ARGS       any additional python flags as a single quoted string
 #                        e.g. "--target-rate 25 --original-rate 50"
 #                        pass "" if none
+#   $7  DATA_SOURCE      subject | event_window  (default: subject)
 #
 # Manual test examples:
-#   sbatch --time=06:00:00 run_ablation.sh 1 1 rnn padding            pad       ""
-#   sbatch --time=06:00:00 run_ablation.sh 1 1 cnn downsample_truncate freq25   "--target-rate 25 --original-rate 50"
-#   sbatch --time=06:00:00 run_ablation.sh 1 1 rnn sliding_window      win300   "--window-size 300 --overlap 0.3"
-#   sbatch --time=06:00:00 run_ablation.sh 1 1 rnn phase_shift         shift25  "--shift-fraction 0.25"
-#   sbatch --time=48:00:00 run_ablation.sh 1 1 hmm dtw_embedding       dtw_mds10 "--n-components 10 --dtw-method mds"
+#   sbatch --time=06:00:00 run_ablation.sh 1 1 rnn padding           pad       ""        
+#   sbatch --time=06:00:00 run_ablation.sh 1 1 rnn sliding_window    win300    "--window-size 300 --overlap 0.3" 
+#   sbatch --time=06:00:00 run_ablation.sh 1 1 rnn phase_shift       shift25   "--shift-fraction 0.25" 
+#   sbatch --time=48:00:00 run_ablation.sh 1 1 hmm variable_length   vl        ""        event_window
+#   sbatch --time=48:00:00 run_ablation.sh 1 1 hmm dtw_embedding     dtw_mds10 "--n-components 10 --dtw-method mds" 
 # =============================================================================
 
 # ── Static SBATCH directives ──────────────────────────────────────────────────
@@ -36,9 +37,9 @@
 # Script starts here
 # =============================================================================
 
-if [ "$#" -ne 6 ]; then
-    echo "ERROR: Expected 6 arguments: TASK PARADIGM MODEL METHOD ABLATION_GROUP EXTRA_ARGS"
-    echo "Usage: sbatch run_ablation.sh <task> <paradigm> <model> <method> <ablation_group> \"<extra_args>\""
+if [ "$#" -lt 6 ] || [ "$#" -gt 7 ]; then
+    echo "ERROR: Expected 6 or 7 arguments: TASK PARADIGM MODEL METHOD ABLATION_GROUP EXTRA_ARGS [DATA_SOURCE]"
+    echo "Usage: sbatch run_ablation.sh <task> <paradigm> <model> <method> <ablation_group> \"<extra_args>\" [subject|event_window]"
     exit 1
 fi
 
@@ -48,6 +49,10 @@ MODEL=$3
 METHOD=$4
 ABLATION_GROUP=$5
 EXTRA_ARGS=$6
+DATA_SOURCE=${7:-subject}
+
+# Short tag embedded in job/experiment names to distinguish data sources
+if [ "${DATA_SOURCE}" = "event_window" ]; then DS_TAG="EW"; else DS_TAG="SBJ"; fi
 
 PROJECT_ROOT="/home/singh.vishwa/xdash2"
 ENV_NAME="xdash"
@@ -56,13 +61,14 @@ LOG_DIR="${PROJECT_ROOT}/logs/ablations"
 mkdir -p "${LOG_DIR}"
 
 echo "============================================================"
-echo " Ablation Job: ${MODEL^^}_T${TASK}_P${PARADIGM}_${ABLATION_GROUP}"
+echo " Ablation Job: ABL_${DS_TAG}_${ABLATION_GROUP^^}_${MODEL^^}_T${TASK}_P${PARADIGM}"
 echo " Task:         ${TASK}"
 echo " Paradigm:     ${PARADIGM}"
 echo " Model:        ${MODEL}"
 echo " Method:       ${METHOD}"
 echo " Ablation:     ${ABLATION_GROUP}"
 echo " Extra args:   ${EXTRA_ARGS}"
+echo " Data source:  ${DATA_SOURCE}"
 echo " Node:         $(hostname)"
 echo " Start:        $(date)"
 echo "============================================================"
@@ -92,9 +98,10 @@ BASE_ARGS="--task ${TASK} \
     --paradigm ${PARADIGM} \
     --model ${MODEL} \
     --method ${METHOD} \
+    --data-source ${DATA_SOURCE} \
     --save-checkpoints \
     --diagnostics \
-    --experiment-name ABL_${ABLATION_GROUP}_T${TASK}_P${PARADIGM}"
+    --experiment-name ABL_${DS_TAG}_${ABLATION_GROUP}_T${TASK}_P${PARADIGM}"
 
 # HMM-specific additions
 if [ "${MODEL}" == "hmm" ]; then

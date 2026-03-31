@@ -413,9 +413,10 @@ class RNNModel(BaseModel, PyTorchModelMixin):
             y_pred=y_pred,
             y_proba=y_proba,
             X_shape=X.shape,
+            subject_ids=subject_ids,
             per_fold_results=per_fold_results
         )
-    
+
     def _loo_score(
         self,
         cfg: Dict,

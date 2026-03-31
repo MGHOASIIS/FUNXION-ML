@@ -14,6 +14,7 @@ from sklearn.manifold import MDS, Isomap, TSNE
 from data.transforms import (
     Downsample, TimeJitter, TimeWarping, MagnitudeWarping
 )
+from data.paradigms import extract_subject_id
 
 
 class BasePreprocessor(ABC):
@@ -72,16 +73,16 @@ class BasePreprocessor(ABC):
         subject_ids = []
         
         # Group 1 (patients/condition of interest)
-        for idx, (k, tensor_data) in enumerate(g1.items()):
+        for k, tensor_data in g1.items():
             all_tensors.append(tensor_data)
             labels.append(1)
-            subject_ids.append(f"g1_{idx}_{k}")
-        
+            subject_ids.append(f"g1_{extract_subject_id(k)}")
+
         # Group 0 (controls/comparison group)
-        for idx, (k, tensor_data) in enumerate(g0.items()):
+        for k, tensor_data in g0.items():
             all_tensors.append(tensor_data)
             labels.append(0)
-            subject_ids.append(f"g0_{idx}_{k}")
+            subject_ids.append(f"g0_{extract_subject_id(k)}")
         
         return all_tensors, np.array(labels, dtype=np.int32), subject_ids
     
@@ -361,6 +362,7 @@ class PreprocessorFactory:
         model_type: str,
         resample_rate: int = 50,
         original_rate: int = 50,
+        data_source: str = "subject",
         **kwargs
     ) -> BasePreprocessor:
         """
@@ -378,6 +380,10 @@ class PreprocessorFactory:
             sequences are automatically resampled before the method is applied.
         original_rate : int
             Source sampling rate in Hz (default 50).
+        data_source : str
+            'subject' or 'event_window'. Some incompatibilities only apply to
+            whole subject recordings (e.g. padding is safe with short event
+            windows but not with full-length subject recordings).
         **kwargs
             Additional parameters for the chosen preprocessor.
 
@@ -387,26 +393,25 @@ class PreprocessorFactory:
             Configured preprocessor instance, wrapped in ResamplingWrapper
             when resample_rate < original_rate.
         """
-        # DTW embedding produces one fixed-size vector per subject — not a
-        # temporal sequence. HMM requires sequences, so this combination is
-        # fundamentally incompatible.
+        # DTW embedding produces one fixed-size vector per sample — incompatible
+        # with HMM regardless of data source (HMM needs temporal sequences).
         if method == "dtw_embedding" and model_type.lower() == "hmm":
             raise ValueError(
                 "dtw_embedding is incompatible with HMM. "
-                "DTW embedding collapses each subject to a single vector "
+                "DTW embedding collapses each sample to a single vector "
                 "(N, n_components) — HMM needs temporal sequences. "
-                "Use variable_length, truncate, or padding with HMM instead."
+                "Use variable_length, truncate, or phase_shift with HMM instead."
             )
 
-        # Padding zero-pads shorter sequences up to T_max. For HMM this causes
-        # NaN in startprob_ and transmat_ because padded states are never visited
-        # during training — this happens regardless of covariance_type.
-        if method == "padding" and model_type.lower() == "hmm":
+        # Padding is only incompatible with HMM for whole subject recordings.
+        # With event_window data, windows are short and bounded so zero-padded
+        # regions are small — NaN in startprob_/transmat_ is much less likely.
+        if method == "padding" and model_type.lower() == "hmm" and data_source == "subject":
             raise ValueError(
-                "padding is incompatible with HMM. Zero-padded regions cause "
-                "NaN in HMM parameters (startprob_, transmat_) because padded "
-                "states are never visited during training. "
-                "Use variable_length with HMM instead."
+                "padding is incompatible with HMM on subject-level data. "
+                "Zero-padded regions cause NaN in HMM parameters (startprob_, "
+                "transmat_) because padded states are never visited during training. "
+                "Use variable_length with HMM instead, or use --data-source event_window."
             )
 
         # Determine output format based on model type

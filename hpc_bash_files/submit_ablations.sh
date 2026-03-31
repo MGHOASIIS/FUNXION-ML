@@ -29,6 +29,7 @@
 #   --model MODEL         hmm | cnn | rnn | transformer (filter, default: all)
 #   --task TASK           1–6 (filter, default: all)
 #   --paradigm P          1–4 (filter, default: all)
+#   --data-source S       subject | event_window (default: subject)
 #   --dry-run             Preview without submitting
 #
 # Examples:
@@ -72,6 +73,7 @@ DRY_RUN=false
 FILTER_MODEL=""
 FILTER_TASK=""
 FILTER_PARADIGM=""
+DATA_SOURCE="subject"
 
 METHODS=()
 FREQS=()
@@ -87,6 +89,7 @@ while [[ $# -gt 0 ]]; do
         --model)           FILTER_MODEL="$2";               shift 2 ;;
         --task)            FILTER_TASK="$2";                shift 2 ;;
         --paradigm)        FILTER_PARADIGM="$2";            shift 2 ;;
+        --data-source)     DATA_SOURCE="$2";                shift 2 ;;
         --method)          METHODS+=("$2");                 shift 2 ;;
         --freq)            FREQS+=("$2");                   shift 2 ;;
         --window-size)     WINDOW_SIZES+=("$2");            shift 2 ;;
@@ -122,6 +125,12 @@ for M in "${METHODS[@]}"; do
     fi
 done
 
+if [[ ! " subject event_window " =~ " ${DATA_SOURCE} " ]]; then
+    echo "ERROR: Unknown data source '${DATA_SOURCE}'"
+    echo "  Valid options: subject event_window"
+    exit 1
+fi
+
 if [ ! -f "${JOB_SCRIPT}" ]; then
     echo "ERROR: Job script not found at ${JOB_SCRIPT}"
     exit 1
@@ -145,20 +154,22 @@ submit_job() {
     local METHOD=$4
     local JOB_TAG=$5
     local EXTRA_ARGS=$6
+    local SRC=${7:-$DATA_SOURCE}
 
     [ -n "${FILTER_MODEL}"    ] && [ "${MODEL}"    != "${FILTER_MODEL}"    ] && return
     [ -n "${FILTER_TASK}"     ] && [ "${TASK}"     != "${FILTER_TASK}"     ] && return
     [ -n "${FILTER_PARADIGM}" ] && [ "${PARADIGM}" != "${FILTER_PARADIGM}" ] && return
 
-    # DTW embedding produces fixed-size vectors, not sequences — incompatible with HMM
+    # DTW embedding incompatible with HMM regardless of data source
     if [ "${METHOD}" = "dtw_embedding" ] && [ "${MODEL}" = "hmm" ]; then
         [ "${DRY_RUN}" = true ] && echo "[SKIPPED] dtw_embedding incompatible with HMM — ${MODEL^^}_T${TASK}_P${PARADIGM}"
         return
     fi
 
-    # Padding causes NaN in HMM parameters (startprob_, transmat_) — incompatible
-    if [ "${METHOD}" = "padding" ] && [ "${MODEL}" = "hmm" ]; then
-        [ "${DRY_RUN}" = true ] && echo "[SKIPPED] padding incompatible with HMM — ${MODEL^^}_T${TASK}_P${PARADIGM}"
+    # Padding incompatible with HMM on subject data only
+    # (allowed for event_window since windows are short and bounded)
+    if [ "${METHOD}" = "padding" ] && [ "${MODEL}" = "hmm" ] && [ "${SRC}" = "subject" ]; then
+        [ "${DRY_RUN}" = true ] && echo "[SKIPPED] padding incompatible with HMM on subject data — ${MODEL^^}_T${TASK}_P${PARADIGM}"
         return
     fi
 
@@ -174,7 +185,8 @@ submit_job() {
         TIME_LIMIT="48:00:00"
     fi
 
-    local JOB_NAME="ABL_${JOB_TAG^^}_${MODEL^^}_T${TASK}_P${PARADIGM}"
+    local DS_TAG="SBJ"; [ "${SRC}" = "event_window" ] && DS_TAG="EW"
+    local JOB_NAME="ABL_${DS_TAG}_${JOB_TAG^^}_${MODEL^^}_T${TASK}_P${PARADIGM}"
 
     local SBATCH_CMD=(sbatch
         --account=a.sathyanarayana
@@ -194,11 +206,11 @@ submit_job() {
     [ "${USE_GPU}" = "true" ] && SBATCH_CMD+=(--gres=gpu:1)
 
     SBATCH_CMD+=("${JOB_SCRIPT}" "${TASK}" "${PARADIGM}" "${MODEL}" \
-                 "${METHOD}" "${JOB_TAG}" "${EXTRA_ARGS}")
+                 "${METHOD}" "${JOB_TAG}" "${EXTRA_ARGS}" "${SRC}")
 
     if [ "${DRY_RUN}" = true ]; then
         echo "[DRY RUN] ${JOB_NAME}"
-        echo "  method=${METHOD}  extra='${EXTRA_ARGS}'"
+        echo "  method=${METHOD}  data_source=${SRC}  extra='${EXTRA_ARGS}'"
         echo "  time=${TIME_LIMIT}  mem=${MEMORY}  partition=${PARTITION}  gpu=${USE_GPU}"
         echo ""
         SUBMITTED=$((SUBMITTED + 1))
@@ -267,6 +279,7 @@ echo " Freqs:    ${FREQS[*]} Hz"
 [ -n "${FILTER_MODEL}"    ] && echo " Model:    ${FILTER_MODEL}"
 [ -n "${FILTER_TASK}"     ] && echo " Task:     ${FILTER_TASK}"
 [ -n "${FILTER_PARADIGM}" ] && echo " Paradigm: ${FILTER_PARADIGM}"
+echo " Data src: ${DATA_SOURCE}"
 [ "${DRY_RUN}" = true ]      && echo " Mode:     DRY RUN"
 echo "============================================================"
 echo ""

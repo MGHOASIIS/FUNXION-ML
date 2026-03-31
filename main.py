@@ -19,7 +19,7 @@ from pathlib import Path
 from datetime import datetime
 
 from config.constants import TASK_NAMES, PARADIGM_NAMES, CHAN_NAME
-from config.paths import get_pickled_dataset_path, EXPERIMENTS_DIR
+from config.paths import get_pickled_dataset_path, get_event_window_path, EXPERIMENTS_DIR
 from data.paradigms import ParadigmSelector
 from data.preprocessors import PreprocessorFactory, AugmentedPreprocessor
 from models.hmm_model import HMMModel
@@ -29,22 +29,41 @@ from models.transformer_model import TransformerModel
 from training.evaluator import ModelEvaluator, Visualizer
 
 def load_data(task: int):
-    """Load patient and control data for given task."""
+    """Load patient and control data for given task (legacy format)."""
     patient_path = get_pickled_dataset_path(task, "patient")
     control_path = get_pickled_dataset_path(task, "control")
-    
+
     with open(patient_path, "rb") as f:
         patient_data = pickle.load(f)
-    
+
     with open(control_path, "rb") as f:
         control_data = pickle.load(f)
-    
-    print(f"\n[Data Loaded]")
-    print(f"  Task: {TASK_NAMES.get(task, task)}")
-    print(f"  Patients: {len(patient_data)}")
-    print(f"  Controls: {len(control_data)}")
-    
+
+    print(f"\n[Data Loaded] legacy")
+    print(f"  Task:     {TASK_NAMES.get(task, task)}")
+    print(f"  Patients: {len(patient_data)} subjects")
+    print(f"  Controls: {len(control_data)} subjects")
+
     return patient_data, control_data
+
+
+def load_event_window_data(task: int):
+    """Load event-window data for given task (g0/g1 format, one entry per window)."""
+    g1_path = get_event_window_path(task, "g1")
+    g0_path = get_event_window_path(task, "g0")
+
+    with open(g1_path, "rb") as f:
+        g1_data = pickle.load(f)
+
+    with open(g0_path, "rb") as f:
+        g0_data = pickle.load(f)
+
+    print(f"\n[Data Loaded] event-window")
+    print(f"  Task:     {TASK_NAMES.get(task, task)}")
+    print(f"  g1 (patients): {len(g1_data)} windows")
+    print(f"  g0 (controls): {len(g0_data)} windows")
+
+    return g1_data, g0_data
 
 
 def create_model(model_type: str, checkpoints_dir=None, patience=None, min_delta=None, task=None, paradigm=None):
@@ -81,6 +100,73 @@ def create_model(model_type: str, checkpoints_dir=None, patience=None, min_delta
             task=task,
             paradigm=paradigm
         )
+
+def save_predictions(results, subject_ids, task: int, paradigm: int,
+                     model_name: str, method: str, save_dir: Path):
+    """
+    Save per-sample predictions to CSV.
+
+    For subject-level data each row = one subject.
+    For event-window data each row = one window, with the window identity
+    (subject, event phase) parsed from the subject_id key.
+
+    Columns:
+        subject_id    — raw key from preprocessor
+        subject       — extracted subject identifier (e.g. fx07, PX01)
+        window_desc   — event phase description if event_window, else ''
+        y_true        — ground truth label (0/1)
+        y_pred        — predicted label (0/1)
+        y_proba       — predicted probability for class 1
+        correct       — True if y_true == y_pred
+        error_type    — correct | false_positive | false_negative
+    """
+    import pandas as pd
+
+    sids = results.subject_ids if results.subject_ids is not None else subject_ids
+
+    rows = []
+    for sid, yt, yp, ypr in zip(sids, results.y_true, results.y_pred, results.y_proba):
+        sid_str = str(sid)
+
+        # Parse subject and window description
+        # event_window keys: "g1_0_fx07__win0__Jar_picked_up_to_Jar_put_down"
+        # subject keys:      "g1_0_PX01"
+        parts = sid_str.split("__", 1)
+        raw_subject = parts[0].split("_", 2)[-1] if "_" in parts[0] else parts[0]
+        window_desc = parts[1] if len(parts) > 1 else ""
+
+        correct    = int(yt) == int(yp)
+        if correct:
+            error_type = "correct"
+        elif int(yp) == 1:
+            error_type = "false_positive"
+        else:
+            error_type = "false_negative"
+
+        rows.append({
+            "subject_id":   sid_str,
+            "subject":      raw_subject,
+            "window_desc":  window_desc,
+            "y_true":       int(yt),
+            "y_pred":       int(yp),
+            "y_proba":      round(float(ypr), 4),
+            "correct":      correct,
+            "error_type":   error_type,
+        })
+
+    df = pd.DataFrame(rows)
+    filename = f"predictions_T{task}_P{paradigm}_{model_name}_{method}.csv"
+    filepath = save_dir / filename
+    df.to_csv(filepath, index=False)
+
+    n_correct = df["correct"].sum()
+    n_fp      = (df["error_type"] == "false_positive").sum()
+    n_fn      = (df["error_type"] == "false_negative").sum()
+    print(f"\n[Predictions Saved] {filepath}")
+    print(f"  Correct: {n_correct}/{len(df)}  |  FP: {n_fp}  |  FN: {n_fn}")
+
+    return df
+
 
 
 def save_results(results, task: int, paradigm: int, model_name: str, method: str, save_dir: Path):
@@ -167,6 +253,16 @@ def main():
         description="Run XDash classification experiments with optional comprehensive diagnostics"
     )
     
+    # Data source
+    parser.add_argument(
+        "--data-source",
+        type=str,
+        default="subject",
+        choices=["subject", "event_window"],
+        help="'subject' uses patient/control_data_taskN.pkl (one array per subject); "
+             "'event_window' uses g0/g1_data_taskN.pkl (one array per window)"
+    )
+
     # Required arguments
     parser.add_argument(
         "-t",
@@ -415,9 +511,12 @@ def main():
     # LOAD DATA
     # ========================================================================
     
-    patient_data, control_data = load_data(args.task)
-    
-    # Select paradigm
+    if args.data_source == "event_window":
+        patient_data, control_data = load_event_window_data(args.task)
+    else:
+        patient_data, control_data = load_data(args.task)
+
+    # Select paradigm — works for both formats via extract_subject_id
     selector = ParadigmSelector()
     g1, g0 = selector.select_paradigm(
         patient_data=patient_data,
@@ -445,6 +544,7 @@ def main():
         model_type=args.model,
         resample_rate=args.freq,
         original_rate=50,
+        data_source=args.data_source,
         **preproc_kwargs
     )
 
@@ -471,15 +571,13 @@ def main():
                         paradigm=args.paradigm
                         )
 
-    # HMM + padding is numerically unstable regardless of covariance type —
-    # zero-padded regions cause NaN in startprob_ / transmat_ because padded
-    # states are never visited during training. Use variable_length instead.
-    if args.model.lower() == "hmm" and args.method == "padding":
+    # HMM + padding on subject data is numerically unstable — zero-padded regions
+    # cause NaN in startprob_/transmat_. Allowed for event_window data since
+    # windows are short and bounded so padding regions are small.
+    if args.model.lower() == "hmm" and args.method == "padding" and args.data_source == "subject":
         raise ValueError(
-            "HMM + padding is not supported. Zero-padded regions cause NaN "
-            "in HMM parameters (startprob_, transmat_) because padded states "
-            "are never visited during training. Use --method variable_length "
-            "with HMM instead."
+            "HMM + padding is not supported for subject-level data. "
+            "Use --method variable_length or --data-source event_window."
         )
 
     results = model.fit(
@@ -533,6 +631,16 @@ def main():
     
     results_dict = save_results(
         results=results,
+        task=args.task,
+        paradigm=args.paradigm,
+        model_name=args.model.upper(),
+        method=args.method,
+        save_dir=results_dir
+    )
+
+    save_predictions(
+        results=results,
+        subject_ids=subject_ids,
         task=args.task,
         paradigm=args.paradigm,
         model_name=args.model.upper(),

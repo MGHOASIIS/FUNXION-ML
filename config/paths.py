@@ -15,6 +15,25 @@ def get_pickled_dataset_path(task: int, data_type: str) -> Path:
     """Get path to pickled dataset."""
     return DATA_DIR / "pickled_datasets" / f"{data_type}_data_task{task}.pkl"
 
+
+def get_event_window_path(task: int, group: str) -> Path:
+    """
+    Get path to pre-generated event-window pickled dataset.
+
+    Parameters
+    ----------
+    task : int
+        Task number (1–6)
+    group : str
+        'g1' (patients / condition group) or 'g0' (controls)
+
+    Returns
+    -------
+    Path
+        e.g. data/pickled_datasets/event_windows/g1_data_task1.pkl
+    """
+    return DATA_DIR / "pickled_datasets" / "event_window" / f"{group}_data_task{task}.pkl"
+
 # Create necessary directories
 for directory in [DATA_DIR, EXPERIMENTS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
