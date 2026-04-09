@@ -439,7 +439,15 @@ def main():
         help="Directory containing consolidated_task{N}.csv event files "
              "for HMM/HSMM state-to-event alignment (used with --diagnostics --model hmm/hsmm)"
     )
-    
+
+    parser.add_argument(
+        "--data-source",
+        type=str,
+        default="standard",
+        choices=["standard", "event_window"],
+        help="Data source to use: 'standard' (default pickled dataset) or 'event_window'"
+    )
+
     args = parser.parse_args()
     
     # ========================================================================
