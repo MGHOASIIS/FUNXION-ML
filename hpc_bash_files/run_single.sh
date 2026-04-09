@@ -82,6 +82,19 @@ if [ "${MODEL}" == "hmm" ]; then
         --save-checkpoints \
         --diagnostics \
         --hmm-csv-dir data/events/"
+elif [ "${MODEL}" == "hsmm" ]; then
+    # ── HSMM: mirrors HMM settings exactly ───────────────────────────────────
+    # Explicit-duration Viterbi is O(T²) so time limit is extended to 96 h.
+    # Uses variable_length and diagnostics identical to HMM so outputs are
+    # directly comparable for the ablation table.
+    # Adds duration_distributions.png diagnostic (HSMM-exclusive).
+    ARGS="--task ${TASK} \
+        --paradigm ${PARADIGM} \
+        --model hsmm \
+        --method variable_length \
+        --save-checkpoints \
+        --diagnostics \
+        --hmm-csv-dir data/events/"
 else
     # ── CNN / RNN / Transformer ───────────────────────────────────────────────
     ARGS="--task ${TASK} \
