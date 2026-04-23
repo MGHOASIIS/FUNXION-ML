@@ -55,5 +55,8 @@ FEATURE_FILTER_NAMES = {
 }
 
 # Subjects to exclude from all paradigms
-EXCLUDE_G1 = {"PX20"}
-EXCLUDE_G0 = {"fx20"}
+# EXCLUDE_G1 = {"PX20"}
+# EXCLUDE_G0 = {"fx20"}
+
+EXCLUDE_G1 = {}
+EXCLUDE_G0 = {}

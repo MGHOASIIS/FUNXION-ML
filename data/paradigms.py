@@ -15,7 +15,7 @@ Subject identity is always extracted via extract_subject_id(key).
 from typing import Dict, Tuple
 import pandas as pd
 from config.paths import PATIENT_DETAILS
-from config.constants import EXCLUDED_G1, EXCLUDED_G0
+from config.constants import EXCLUDE_G1, EXCLUDE_G0
 
 
 def extract_subject_id(key: str) -> str:
@@ -94,11 +94,11 @@ class ParadigmSelector:
             Data dictionaries for group 1 and group 0
         """
         # Apply global exclusions before any paradigm filtering
-        patient_data = {k: v for k, v in patient_data.items() if extract_subject_id(k) not in self.EXCLUDE_G1}
-        control_data = {k: v for k, v in control_data.items() if extract_subject_id(k) not in self.EXCLUDE_G0}
+        patient_data = {k: v for k, v in patient_data.items() if extract_subject_id(k) not in EXCLUDE_G1}
+        control_data = {k: v for k, v in control_data.items() if extract_subject_id(k) not in EXCLUDE_G0}
 
-        excluded_g1 = [k for k in self.EXCLUDE_G1]
-        excluded_g0 = [k for k in self.EXCLUDE_G0]
+        excluded_g1 = [k for k in EXCLUDE_G1]
+        excluded_g0 = [k for k in EXCLUDE_G0]
         print(f"[ParadigmSelector] Excluded from g1: {excluded_g1}")
         print(f"[ParadigmSelector] Excluded from g0: {excluded_g0}")
         if paradigm == 1:
