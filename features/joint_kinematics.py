@@ -7,7 +7,7 @@ NOT: Accelerometer + Gyroscope (doesn't need sensor fusion)
 """
 
 import numpy as np
-from config import SAMPLING_RATE
+from feature_config import SAMPLING_RATE
 
 
 def get_joint_angles(position_data, rotation_data):

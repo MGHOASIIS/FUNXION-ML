@@ -7,7 +7,7 @@ import numpy as np
 import antropy as ant
 import neurokit2 as nk
 
-from config import SAMPLING_RATE
+from feature_config import SAMPLING_RATE
 
 
 def extract_complexity_features(signal_data):

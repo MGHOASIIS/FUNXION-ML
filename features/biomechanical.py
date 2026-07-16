@@ -7,7 +7,7 @@ Data format: Position + Rotation
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from typing import Dict, List, Tuple
-from config import N_SENSORS
+from feature_config import N_SENSORS
 
 
 class BiomechanicalFeatures:
@@ -136,7 +136,7 @@ class BiomechanicalFeatures:
             velocities: (T-1, N_SENSORS, 3)
         """
         if fs is None:
-            from config import SAMPLING_RATE
+            from feature_config import SAMPLING_RATE
             fs = SAMPLING_RATE
         
         dt = 1.0 / fs
@@ -156,7 +156,7 @@ class BiomechanicalFeatures:
             accelerations: (T-2, N_SENSORS, 3)
         """
         if fs is None:
-            from config import SAMPLING_RATE
+            from feature_config import SAMPLING_RATE
             fs = SAMPLING_RATE
         
         dt = 1.0 / fs
@@ -237,7 +237,7 @@ class BiomechanicalFeatures:
         features.update(rom)
         
         # 3. Velocities
-        from config import SAMPLING_RATE
+        from feature_config import SAMPLING_RATE
         velocities = self.compute_velocities(positions, fs=SAMPLING_RATE)
         peak_vels = self.compute_peak_velocities(velocities)
         features.update(peak_vels)

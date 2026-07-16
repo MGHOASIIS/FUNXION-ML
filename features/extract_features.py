@@ -33,7 +33,7 @@ from time_domain_stats import *
 from wavelet_features import *
 
 # Import configuration
-from config import N_SENSORS, SAMPLING_RATE, SENSOR_NAMES
+from feature_config import N_SENSORS, SAMPLING_RATE, SENSOR_NAMES
 
 
 class MasterFeatureExtractor:
