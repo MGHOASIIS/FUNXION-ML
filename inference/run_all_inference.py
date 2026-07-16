@@ -10,15 +10,15 @@ loaded only once per group — not once per model.
 Usage
 -----
     # Run all available checkpoints for one test subject
-    python run_all_inference.py --test-subject-dir data/test_data/PX41 --subject-id PX_41
+    python run_all_inference.py --test-subject-dir storage/raw/xdash/test_data/PX41 --subject-id PX_41
 
     # Filter to specific tasks or paradigms
-    python run_all_inference.py --test-subject-dir data/test_data/PX41 --subject-id PX_41 \\
+    python run_all_inference.py --test-subject-dir storage/raw/xdash/test_data/PX41 --subject-id PX_41 \\
         --tasks 1 2 --paradigms 1 2
 
     # Custom experiments and output paths
     python run_all_inference.py \\
-        --test-subject-dir data/test_data/PX41 --subject-id PX_41 \\
+        --test-subject-dir storage/raw/xdash/test_data/PX41 --subject-id PX_41 \\
         --experiments-dir results/experiments_from_hpc \\
         --output results/PX41_all_results.csv
 """
@@ -42,9 +42,9 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from data.ingestion import load_dataset_config
-from data.paradigms import ParadigmSelector
-from data.preprocessors import PreprocessorFactory
+from dataio.ingestion import load_dataset_config
+from dataio.paradigms import ParadigmSelector
+from dataio.preprocessors import PreprocessorFactory
 from inference import (
     load_training_data,
     build_model,
@@ -334,7 +334,7 @@ def main():
                         help="Dataset name (must match datasets/ folder). Default: xdash")
     parser.add_argument("--test-subject-dir", required=True,
                         help="Directory containing pickled/ subdir with test pkl files "
-                             "(e.g. data/test_data/PX41)")
+                             "(e.g. storage/raw/xdash/test_data/PX41)")
     parser.add_argument("--subject-id", required=True,
                         help="Subject ID used in the pkl dict (e.g. PX_41)")
     parser.add_argument("--experiments-dir", default="results/experiments_from_hpc",

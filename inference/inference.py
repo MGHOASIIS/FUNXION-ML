@@ -51,9 +51,9 @@ if _PROJECT_ROOT not in sys.path:
 
 from config.constants import DOFS, DEVICE
 from config.paths import get_pickled_dataset_path
-from data.ingestion import load_dataset_config
-from data.paradigms import ParadigmSelector
-from data.preprocessors import PreprocessorFactory
+from dataio.ingestion import load_dataset_config
+from dataio.paradigms import ParadigmSelector
+from dataio.preprocessors import PreprocessorFactory
 
 # Set by main() before any helper function runs
 _DATASET: str = "xdash"

@@ -24,17 +24,17 @@ directly to inference.py via --test-data.
 
 Usage
 -----
-    # Extract all 6 tasks from data/test_data/ and save to data/test_data/pickled/
-    python prepare_test_data.py --data-dir data/test_data/ --subject-id PX_NEW
+    # Extract all 6 tasks from storage/raw/xdash/test_data/ and save to storage/raw/xdash/test_data/pickled/
+    python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW
 
     # Extract only tasks 1 and 3
-    python prepare_test_data.py --data-dir data/test_data/ --subject-id PX_NEW --tasks 1 3
+    python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW --tasks 1 3
 
     # Dry run to check what would be extracted (no files written)
-    python prepare_test_data.py --data-dir data/test_data/ --subject-id PX_NEW --dry-run
+    python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW --dry-run
 
     # Specify a custom output directory
-    python prepare_test_data.py --data-dir data/test_data/ --subject-id PX_NEW \\
+    python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW \\
         --output-dir my_output/
 """
 
@@ -52,7 +52,7 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from data.ingestion import load_dataset_config
+from dataio.ingestion import load_dataset_config
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +237,7 @@ def main():
     parser.add_argument(
         "--data-dir", required=True,
         help="Directory containing Master.csv and PlayerMovement.csv "
-             "(e.g. data/test_data/)"
+             "(e.g. storage/raw/xdash/test_data/)"
     )
     parser.add_argument(
         "--subject-id", required=True,
