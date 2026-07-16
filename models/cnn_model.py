@@ -16,84 +16,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
-from sklearn.model_selection import LeaveOneOut, ParameterGrid
+from sklearn.model_selection import ParameterGrid
 from sklearn.metrics import balanced_accuracy_score
 from joblib import parallel_backend, Parallel, delayed
 
 from models.base_model import BaseModel, ModelResults, PyTorchModelMixin
 from config.constants import CHAN_NAME, DEVICE
 from utils.metrics import compute_metrics
-
-
-# ============================================================================
-# Early Stopping
-# ============================================================================
-
-class EarlyStopping:
-    """Early stopping to prevent overfitting."""
-
-    def __init__(self, patience: int = 10, min_delta: float = 1e-4, mode: str = "min"):
-        """
-        Parameters
-        ----------
-        patience : int
-            Number of epochs to wait before stopping
-        min_delta : float
-            Minimum change to qualify as improvement
-        mode : str
-            'min' for loss, 'max' for accuracy
-        """
-        self.patience = patience
-        self.min_delta = min_delta
-        self.mode = mode
-        self.counter = 0
-        self.best_score = None
-        self.best_state = None
-        self.early_stop = False
-
-    def step(self, score: float, model: nn.Module) -> bool:
-        """
-        Check if training should stop.
-
-        Parameters
-        ----------
-        score : float
-            Current metric value (e.g. training loss)
-        model : nn.Module
-            Model to snapshot if improved
-
-        Returns
-        -------
-        bool
-            True if training should stop
-        """
-        if self.best_score is None:
-            self.best_score = score
-            self.best_state = model.state_dict()
-            return False
-
-        if self.mode == "min":
-            improved = score < (self.best_score - self.min_delta)
-        else:
-            improved = score > (self.best_score + self.min_delta)
-
-        if improved:
-            self.best_score = score
-            self.best_state = model.state_dict()
-            self.counter = 0
-        else:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
-                return True
-
-        return False
-
-    def load_best(self, model: nn.Module) -> nn.Module:
-        """Restore model to the best observed state."""
-        if self.best_state is not None:
-            model.load_state_dict(self.best_state)
-        return model
+from utils.training import (
+    EarlyStopping, build_loo_splits, resolve_fold_masks,
+    build_fold_record, print_best,
+)
 
 
 # ============================================================================
@@ -267,16 +200,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         y_tensor = torch.tensor(y, dtype=torch.long)
 
         # Set up LOO CV splits at the subject or sample level
-        if subject_ids is not None:
-            unique_subjects = np.unique(subject_ids)
-            loo = LeaveOneOut()
-            cv_splits = list(loo.split(unique_subjects))
-            print(f"\n[CNN] Subject-level LOO CV: {len(unique_subjects)} subjects")
-        else:
-            unique_subjects = None
-            loo = LeaveOneOut()
-            cv_splits = list(loo.split(range(len(X))))
-            print(f"\n[CNN] Sample-level LOO CV: {len(X)} samples")
+        cv_splits, unique_subjects = build_loo_splits(len(X), subject_ids, "CNN")
 
         grid = list(ParameterGrid(param_grid))
         print(f"[CNN] Evaluating {len(grid)} hyperparameter combinations...")
@@ -294,8 +218,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         best_result = max(results, key=lambda t: t[0])
         best_score, best_params, y_true, y_pred, y_proba, avg_first_layer_weights, per_fold_results = best_result
 
-        print(f"\n[CNN] Best params: {best_params}")
-        print(f"[CNN] Best balanced accuracy: {best_score:.4f}")
+        print_best("CNN", best_params, best_score)
 
         # Compute feature importance from averaged first-layer weights
         feature_imp = self._compute_channel_importance(avg_first_layer_weights)
@@ -378,20 +301,9 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
 
             # Resolve sample indices from subject-level or sample-level splits
-            if subject_ids is not None:
-                train_subjects = unique_subjects[train_idx]
-                test_subjects = unique_subjects[test_idx]
-
-                train_mask = np.isin(subject_ids, train_subjects)
-                test_mask = np.isin(subject_ids, test_subjects)
-
-                train_sample_idx = np.where(train_mask)[0]
-                test_sample_idx = np.where(test_mask)[0]
-            else:
-                train_subjects = np.array([fold_idx])   # placeholder for logging
-                test_subjects = np.array([fold_idx])
-                train_sample_idx = train_idx
-                test_sample_idx = test_idx
+            train_sample_idx, test_sample_idx, test_subjects = resolve_fold_masks(
+                subject_ids, unique_subjects, train_idx, test_idx, fold_idx
+            )
 
             # Split data
             X_train = X[train_sample_idx]
@@ -486,27 +398,15 @@ class CNNModel(BaseModel, PyTorchModelMixin):
 
             fold_ba = balanced_accuracy_score(y_test_list, preds)
 
-            per_fold_results.append({
-                'fold': fold_idx,
-                'test_subjects': test_subjects.tolist() if subject_ids is not None else [fold_idx],
-
-                # Losses — generalization curve
-                'train_loss': float(early_stopper.best_score),
-                'val_loss': float(val_loss),
-
-                # Accuracies
-                'train_acc': float(best_train_acc),
-                'val_acc': float(fold_ba),
-
-                # Predictions
-                'y_true': y_test_list,
-                'y_pred': preds.tolist(),
-                'y_proba': probs.tolist(),
-
-                # Training diagnostics
-                'epochs_trained': epoch + 1,
-                'early_stopped': early_stopper.early_stop
-            })
+            per_fold_results.append(build_fold_record(
+                fold_idx, test_subjects, subject_ids,
+                y_test_list, preds, probs, fold_ba,
+                train_loss=float(early_stopper.best_score),
+                val_loss=float(val_loss),
+                train_acc=float(best_train_acc),
+                epochs_trained=epoch + 1,
+                early_stopped=early_stopper.early_stop,
+            ))
 
             # FIX: accumulate first-layer weights from every fold
             first_layer_weights = model.feature_extractor[0].weight.detach().cpu().clone()
