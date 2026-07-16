@@ -72,8 +72,8 @@ echo ""
 echo "[INFO] Verifying project structure..."
 for path in \
     "${PROJECT_ROOT}/main.py" \
-    "${PROJECT_ROOT}/data/xdash_px_details.xlsx" \
-    "${PROJECT_ROOT}/data/pickled_datasets"; do
+    "${PROJECT_ROOT}/storage/raw/xdash/xdash_px_details.xlsx" \
+    "${PROJECT_ROOT}/storage/pickled/xdash"; do
     if [ -e "${path}" ]; then
         echo "  [OK]      ${path}"
     else

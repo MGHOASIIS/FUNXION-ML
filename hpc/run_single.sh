@@ -81,7 +81,7 @@ if [ "${MODEL}" == "hmm" ]; then
         --method variable_length \
         --save-checkpoints \
         --diagnostics \
-        --hmm-csv-dir data/events/"
+        --hmm-csv-dir storage/raw/xdash/events/"
 elif [ "${MODEL}" == "hsmm" ]; then
     # ── HSMM: mirrors HMM settings exactly ───────────────────────────────────
     # Explicit-duration Viterbi is O(T²) so time limit is extended to 96 h.
@@ -94,7 +94,7 @@ elif [ "${MODEL}" == "hsmm" ]; then
         --method variable_length \
         --save-checkpoints \
         --diagnostics \
-        --hmm-csv-dir data/events/"
+        --hmm-csv-dir storage/raw/xdash/events/"
 else
     # ── CNN / RNN / Transformer ───────────────────────────────────────────────
     ARGS="--task ${TASK} \
