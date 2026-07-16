@@ -527,8 +527,8 @@ from master_feature_integrator import add_master_features_to_dataset
 
 # Extract features
 data = add_master_features_to_dataset(
-    input_pickle_path="data/pickled_datasets/unified_dataset_raw.pkl",
-    output_pickle_path="data/pickled_datasets/unified_dataset_all_features.pkl",
+    input_pickle_path="storage/pickled/xdash/unified_dataset_raw.pkl",
+    output_pickle_path="storage/pickled/xdash/unified_dataset_all_features.pkl",
     batch_size=10
 )
 
@@ -555,8 +555,8 @@ X = np.array([[t['all_extracted_features'][k] for k in feature_names] for t in d
     print("\nStarting extraction...")
     
     data = add_master_features_to_dataset(
-        input_pickle_path="data/pickled_datasets/unified_dataset_raw.pkl",
-        output_pickle_path="data/pickled_datasets/unified_dataset_all_features.pkl",
+        input_pickle_path="storage/pickled/xdash/unified_dataset_raw.pkl",
+        output_pickle_path="storage/pickled/xdash/unified_dataset_all_features.pkl",
         batch_size=10
     )
     
