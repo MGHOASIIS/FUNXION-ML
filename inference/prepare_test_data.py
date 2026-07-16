@@ -24,29 +24,45 @@ directly to inference.py via --test-data.
 
 Usage
 -----
-    # Extract all 6 tasks from test_data/ and save to test_data/pickled/
-    python prepare_test_data.py --data-dir test_data/ --subject-id PX_NEW
+    # Extract all 6 tasks from data/test_data/ and save to data/test_data/pickled/
+    python prepare_test_data.py --data-dir data/test_data/ --subject-id PX_NEW
 
     # Extract only tasks 1 and 3
-    python prepare_test_data.py --data-dir test_data/ --subject-id PX_NEW --tasks 1 3
+    python prepare_test_data.py --data-dir data/test_data/ --subject-id PX_NEW --tasks 1 3
 
     # Dry run to check what would be extracted (no files written)
-    python prepare_test_data.py --data-dir test_data/ --subject-id PX_NEW --dry-run
+    python prepare_test_data.py --data-dir data/test_data/ --subject-id PX_NEW --dry-run
 
     # Specify a custom output directory
-    python prepare_test_data.py --data-dir test_data/ --subject-id PX_NEW \\
+    python prepare_test_data.py --data-dir data/test_data/ --subject-id PX_NEW \\
         --output-dir my_output/
 """
 
 import argparse
 import pickle
+import sys
 import numpy as np
 import pandas as pd
 from pathlib import Path
 
+# Allow running as `python inference/prepare_test_data.py` from the project
+# root — the script's own directory (inference/) is on sys.path by default,
+# not the project root, so top-level packages wouldn't otherwise be importable.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from data.ingestion import load_dataset_config
+
 
 # ---------------------------------------------------------------------------
 # Constants (kept in sync with generate_pickled_datasets.py)
+#
+# TASK_NAMES here are the literal row labels used in Master.csv's "name"
+# column — a raw-ingestion-format detail, not the same as the human-readable
+# task names (e.g. "jar_opening") in datasets/{dataset}/dataset.yaml.
+# MOVEMENT_COLS / ROT_COLS describe XDash's specific 3-sensor CSV schema and
+# are similarly a raw-format detail rather than dataset-config-driven.
 # ---------------------------------------------------------------------------
 
 TASK_NAMES = {
@@ -65,8 +81,7 @@ MOVEMENT_COLS = [
     "RPosX", "RPosY", "RPosZ", "RRotX", "RRotY", "RRotZ",
 ]
 
-SAMPLING_RATE = 50   # Hz
-N_FEATURES    = 18   # excludes TimeElapsed
+N_FEATURES = 18   # excludes TimeElapsed
 
 # Rotation column indices in the (T, 19) array (col 0 = TimeElapsed)
 ROT_COLS = [4, 5, 6,    # HRotX, HRotY, HRotZ
@@ -216,9 +231,13 @@ def main():
         description="Convert a single patient's raw XDash CSVs to per-task pickle files."
     )
     parser.add_argument(
+        "--dataset", default="xdash",
+        help="Dataset name (must match datasets/ folder). Default: xdash"
+    )
+    parser.add_argument(
         "--data-dir", required=True,
         help="Directory containing Master.csv and PlayerMovement.csv "
-             "(e.g. test_data/)"
+             "(e.g. data/test_data/)"
     )
     parser.add_argument(
         "--subject-id", required=True,
@@ -238,6 +257,8 @@ def main():
         help="Print extraction info without writing any files"
     )
     args = parser.parse_args()
+
+    sampling_rate = load_dataset_config(args.dataset).get("sampling_rate", 50)
 
     data_dir   = Path(args.data_dir)
     output_dir = Path(args.output_dir) if args.output_dir \
@@ -295,8 +316,8 @@ def main():
         arr = fix_rotation_cols(arr)
 
         n_frames   = len(arr)
-        duration_s = n_frames / SAMPLING_RATE
-        print(f"    ✓  {n_frames} frames  ({duration_s:.1f}s @ {SAMPLING_RATE}Hz)  "
+        duration_s = n_frames / sampling_rate
+        print(f"    ✓  {n_frames} frames  ({duration_s:.1f}s @ {sampling_rate}Hz)  "
               f"shape={arr.shape}")
 
         if args.dry_run:
