@@ -422,6 +422,13 @@ class PreprocessorFactory:
 
         if method == "truncate":
             preprocessor = TruncatePreprocessor(output_format=output_format)
+        elif method == "downsample_truncate":
+            # Functionally identical to truncate — the actual downsampling
+            # is applied generically below via ResamplingWrapper whenever
+            # resample_rate < original_rate. This method name exists so
+            # callers can pass an explicit target_rate/original_rate pair
+            # independent of the generic --freq resampling flag.
+            preprocessor = TruncatePreprocessor(output_format=output_format)
         elif method == "sliding_window":
             preprocessor = SlidingWindowPreprocessor(
                 output_format=output_format,
