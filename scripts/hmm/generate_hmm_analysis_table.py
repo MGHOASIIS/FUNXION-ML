@@ -28,6 +28,7 @@ Usage:
 import argparse
 import glob
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -905,10 +906,16 @@ def main():
     ap.add_argument("--task",     type=int, choices=range(1,7))
     ap.add_argument("--paradigm", type=int, choices=range(1,5))
     ap.add_argument("--all",      action="store_true")
-    ap.add_argument("--hmm-dir",       default="experiments_from_hpc/")
-    ap.add_argument("--state-seq-dir", default="hmm-results/state_seqs")
+    ap.add_argument("--dataset",       default="xdash",
+                    help="Dataset name (must match datasets/ folder). Default: xdash")
+    ap.add_argument("--hmm-dir",       default=None,
+                    help="Root directory containing HMM experiment folders "
+                         "(default: storage/results/<dataset>/experiments)")
+    ap.add_argument("--state-seq-dir", default=None,
+                    help="Default: storage/results/<dataset>/hmm/state_seqs")
     ap.add_argument("--px-details",    default="data/xdash_px_details.xlsx")
-    ap.add_argument("--out",           default="hmm-results/reports")
+    ap.add_argument("--out",           default=None,
+                    help="Default: storage/results/<dataset>/hmm/reports")
     ap.add_argument("--emission-csv",  default=None,
                     help="CSV with emission importance from save_emission_importance.py")
     args = ap.parse_args()
@@ -916,19 +923,28 @@ def main():
     if not args.all and (args.task is None or args.paradigm is None):
         ap.error("Provide --task and --paradigm, or use --all")
 
+    for _root in (Path.cwd(), *Path(__file__).resolve().parents):
+        if (_root / "config" / "paths.py").exists():
+            sys.path.insert(0, str(_root))
+            break
+    from config.paths import get_experiments_dir, get_results_dir
+    hmm_dir       = Path(args.hmm_dir) if args.hmm_dir else get_experiments_dir(args.dataset)
+    state_seq_dir = Path(args.state_seq_dir) if args.state_seq_dir else get_results_dir(args.dataset) / "hmm" / "state_seqs"
+    out_dir       = Path(args.out) if args.out else get_results_dir(args.dataset) / "hmm" / "reports"
+
     combos = ([(t,p) for t in range(1,7) for p in range(1,5)]
               if args.all else [(args.task, args.paradigm)])
 
     generated = []
     for task, paradigm in combos:
         p = generate(task, paradigm,
-                     Path(args.hmm_dir), Path(args.state_seq_dir),
-                     Path(args.px_details), Path(args.out))
+                     hmm_dir, state_seq_dir,
+                     Path(args.px_details), out_dir)
         if p:
             generated.append(p)
 
     print(f"\n{'='*60}")
-    print(f"Done. {len(generated)} file(s) → {args.out}/")
+    print(f"Done. {len(generated)} file(s) → {out_dir}/")
     for p in generated:
         print(f"  {p.name}")
     print(f"{'='*60}")

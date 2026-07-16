@@ -23,17 +23,18 @@ Three analyses:
 
 Usage:
     python hmm_laterality_analysis.py
-    python hmm_laterality_analysis.py --hmm-dir experiments_from_hpc/ --px-details data/xdash_px_details.xlsx
+    python hmm_laterality_analysis.py --dataset xdash --px-details data/xdash_px_details.xlsx
     python hmm_laterality_analysis.py --paradigm 1   # only paradigm 1
     python hmm_laterality_analysis.py --task 1 2 3   # only tasks 1-3
 
 Output:
-    hmm-results/laterality/HMM_Laterality_Analysis.xlsx  (5-sheet workbook)
+    storage/results/<dataset>/hmm/laterality/HMM_Laterality_Analysis.xlsx  (5-sheet workbook)
 """
 
 import argparse
 import glob
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -1232,20 +1233,29 @@ def load_all_results(hmm_dir: Path, df_px: pd.DataFrame,
 
 def main():
     ap = argparse.ArgumentParser(description="HMM Laterality Analysis — 3 post-hoc analyses")
-    ap.add_argument("--hmm-dir",     default="experiments_from_hpc/",
-                    help="Root of HMM experiment outputs (default: experiments_from_hpc/)")
+    ap.add_argument("--dataset",     default="xdash",
+                    help="Dataset name (must match datasets/ folder). Default: xdash")
+    ap.add_argument("--hmm-dir",     default=None,
+                    help="Root of HMM experiment outputs "
+                         "(default: storage/results/<dataset>/experiments)")
     ap.add_argument("--px-details",  default="data/xdash_px_details.xlsx",
                     help="Path to xdash_px_details.xlsx")
-    ap.add_argument("--out",         default="hmm-results/laterality",
-                    help="Output directory (default: hmm-results/laterality)")
+    ap.add_argument("--out",         default=None,
+                    help="Output directory (default: storage/results/<dataset>/hmm/laterality)")
     ap.add_argument("--task",        nargs="+", type=int, default=TASKS,
                     choices=TASKS, help="Tasks to include (default: all 1-6)")
     ap.add_argument("--paradigm",    nargs="+", type=int, default=PARADIGMS,
                     choices=PARADIGMS, help="Paradigms to include (default: all 1-4)")
     args = ap.parse_args()
 
-    hmm_dir = Path(args.hmm_dir)
-    out_dir = Path(args.out)
+    for _root in (Path.cwd(), *Path(__file__).resolve().parents):
+        if (_root / "config" / "paths.py").exists():
+            sys.path.insert(0, str(_root))
+            break
+    from config.paths import get_experiments_dir, get_results_dir
+
+    hmm_dir = Path(args.hmm_dir) if args.hmm_dir else get_experiments_dir(args.dataset)
+    out_dir = Path(args.out) if args.out else get_results_dir(args.dataset) / "hmm" / "laterality"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*60}")

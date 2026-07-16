@@ -32,7 +32,7 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-BASE_DIR = Path("experiments_from_hpc")
+BASE_DIR = Path("results/experiments_from_hpc")
 MODELS = ["CNN", "RNN", "TRANSFORMER"]
 TASKS = range(1, 7)
 PARADIGMS = range(1, 5)
@@ -215,12 +215,12 @@ if __name__ == "__main__":
         df.reset_index(drop=True, inplace=True)
 
         # ── Save CSV ──────────────────────────────────────────────────────
-        csv_path = "nn-models-results/all_models_diagnostics_summary.csv"
+        csv_path = "results/nn_models/all_models_diagnostics_summary.csv"
         df.to_csv(csv_path, index=False)
         print(f"\n✓ CSV  saved → {csv_path}  ({len(df)} rows)")
 
         # ── Save JSON ─────────────────────────────────────────────────────
-        json_path = "nn-models-results/all_models_diagnostics_summary.json"
+        json_path = "results/nn_models/all_models_diagnostics_summary.json"
         with open(json_path, "w") as f:
             json.dump(records, f, indent=2, default=str)
         print(f"✓ JSON saved → {json_path}")

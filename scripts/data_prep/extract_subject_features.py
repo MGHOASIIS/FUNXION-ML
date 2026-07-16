@@ -51,10 +51,10 @@ px_details and kept as identity columns — not used as features.
 Usage
 -----
   python extract_subject_features.py \\
-      --data-dir data/pickled_datasets \\
-      --px-details data/xdash_px_details.xlsx \\
+      --data-dir storage/pickled/xdash \\
+      --px-details storage/raw/xdash/xdash_px_details.xlsx \\
       --features-dir features/ \\
-      --out-dir hmm-results/subject_features/
+      --out-dir storage/results/xdash/hmm/subject_features/
 """
 
 import argparse
@@ -867,21 +867,37 @@ def run_extraction(
 def parse_args():
     p = argparse.ArgumentParser(
         description="Extract per-subject extended features for Paradigm 2")
-    p.add_argument("--data-dir",     default="data/pickled_datasets")
-    p.add_argument("--px-details",   default="data/xdash_px_details.xlsx")
+    p.add_argument("--dataset",      default="xdash",
+                   help="Dataset name (must match datasets/ folder). Default: xdash")
+    p.add_argument("--data-dir",     default=None,
+                   help="Default: storage/pickled/<dataset>")
+    p.add_argument("--px-details",   default=None,
+                   help="Default: storage/raw/<dataset>/<dataset>_px_details.xlsx")
     p.add_argument("--features-dir", default="features",
                    help="Path to features/ folder with all module .py files")
-    p.add_argument("--out-dir",      default="hmm-results/subject_features")
+    p.add_argument("--out-dir",      default=None,
+                   help="Default: storage/results/<dataset>/hmm/subject_features")
     p.add_argument("--tasks",        nargs="+", type=int, default=list(range(1, 2)))
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+
+    for _root in (Path.cwd(), *Path(__file__).resolve().parents):
+        if (_root / "config" / "paths.py").exists():
+            sys.path.insert(0, str(_root))
+            break
+    from config.paths import get_pickled_dir, get_raw_dir, get_results_dir
+
+    data_dir  = Path(args.data_dir) if args.data_dir else get_pickled_dir(args.dataset)
+    px_path   = Path(args.px_details) if args.px_details else get_raw_dir(args.dataset) / f"{args.dataset}_px_details.xlsx"
+    out_dir   = Path(args.out_dir) if args.out_dir else get_results_dir(args.dataset) / "hmm" / "subject_features"
+
     run_extraction(
-        data_dir        = Path(args.data_dir),
-        px_details_path = Path(args.px_details),
-        out_dir         = Path(args.out_dir),
+        data_dir        = data_dir,
+        px_details_path = px_path,
+        out_dir         = out_dir,
         tasks           = args.tasks,
         features_dir    = Path(args.features_dir) if args.features_dir else None,
     )

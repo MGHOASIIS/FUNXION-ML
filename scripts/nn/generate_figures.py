@@ -518,8 +518,8 @@ def fig_model_comparison(df, out_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--csv",  default="nn-models-results/all_models_diagnostics_summary.csv")
-    parser.add_argument("--out",  default="nn-models-results/figures")
+    parser.add_argument("--csv",  default="results/nn_models/all_models_diagnostics_summary.csv")
+    parser.add_argument("--out",  default="results/nn_models/figures")
     parser.add_argument("--demo", action="store_true",
                         help="Use synthetic demo data instead of CSV")
     args = parser.parse_args()
