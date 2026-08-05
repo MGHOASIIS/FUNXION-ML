@@ -49,7 +49,7 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from config.constants import DOFS, DEVICE
+from config.constants import DEVICE
 from config.paths import get_pickled_dataset_path
 from dataio.ingestion import load_dataset_config
 from dataio.paradigms import ParadigmSelector
@@ -58,6 +58,7 @@ from dataio.preprocessors import PreprocessorFactory
 # Set by main() before any helper function runs
 _DATASET: str = "xdash"
 _DATASET_CONFIG: dict = {}
+_N_CHANNELS: int = 18  # overwritten in main() from dataset_config["channels"]
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +133,7 @@ def preprocess_test_truncate(
     arrays, subject_ids = [], []
     for sid, arr in test_data.items():
         arr = _to_numpy(arr)
-        if arr.shape[1] > DOFS:
+        if arr.shape[1] > _N_CHANNELS:
             arr = arr[:, 1:]                        # drop optional timestamp column
         T = arr.shape[0]
         if T >= T_seq:
@@ -167,7 +168,7 @@ def preprocess_test_sliding_window(
     for sid, arr in test_data.items():
         subject_ids.append(sid)
         arr = _to_numpy(arr)
-        if arr.shape[1] > DOFS:
+        if arr.shape[1] > _N_CHANNELS:
             arr = arr[:, 1:]
         T = arr.shape[0]
         for start in range(0, T - window_size + 1, stride):
@@ -216,7 +217,7 @@ def build_model(model_name: str, params: Dict) -> nn.Module:
     if name == "CNN":
         from models.cnn_model import CNNClassifier
         return CNNClassifier(
-            in_channels=DOFS,
+            in_channels=_N_CHANNELS,
             conv_channels=params["conv_channels"],
             kernel_sizes=params["kernel_sizes"],
             dropout_fc=params["dropout_fc"],
@@ -226,7 +227,7 @@ def build_model(model_name: str, params: Dict) -> nn.Module:
     if name == "RNN":
         from models.rnn_model import RNNClassifier
         return RNNClassifier(
-            input_dim=DOFS,
+            input_dim=_N_CHANNELS,
             rnn_type=params["rnn_type"],
             hidden_size=params["hidden_size"],
             num_layers=params["num_layers"],
@@ -240,7 +241,7 @@ def build_model(model_name: str, params: Dict) -> nn.Module:
     if name == "TRANSFORMER":
         from models.transformer_model import TransformerClassifier
         return TransformerClassifier(
-            input_dim=DOFS,
+            input_dim=_N_CHANNELS,
             d_model=params["d_model"],
             nhead=params["nhead"],
             num_layers=params["num_layers"],
@@ -369,9 +370,10 @@ def main():
     args = parser.parse_args()
 
     # Load dataset config and expose as module globals so helpers above can use them
-    global _DATASET, _DATASET_CONFIG
+    global _DATASET, _DATASET_CONFIG, _N_CHANNELS
     _DATASET = args.dataset
     _DATASET_CONFIG = load_dataset_config(args.dataset)
+    _N_CHANNELS = len(_DATASET_CONFIG["channels"])
     if args.resample_rate is None:
         args.resample_rate = _DATASET_CONFIG.get("sampling_rate", 50)
 
