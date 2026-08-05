@@ -49,13 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-pre", "--method", default="truncate",
                    choices=["truncate", "sliding_window", "padding", "dtw_embedding",
                             "downsample_truncate", "variable_length", "phase_shift"])
-    p.add_argument("--window-size", type=int, default=300)
+    # Preprocessing for method = sliding_window
+    p.add_argument("--window-size", type=int, default=300) 
     p.add_argument("--overlap", type=float, default=0.30)
+    # Preprocessing for method = downsample_truncate
     p.add_argument("--target-rate", type=int, default=25)
     p.add_argument("--original-rate", type=int, default=50)
+    # Preprocessing for method = dtw_embedding
     p.add_argument("--n-components", type=int, default=10)
     p.add_argument("--dtw-method", default="mds", choices=["mds", "isomap", "tsne"])
+    # Preprocessing for method = phase_shift
     p.add_argument("--shift-fraction", type=float, default=0.1)
+    # resampling
     p.add_argument("--freq", type=int, default=None,
                    help="Resample to this Hz before preprocessing "
                         "(default: dataset sampling_rate)")
@@ -93,6 +98,12 @@ def main():
     # Default --freq to dataset sampling rate
     if args.freq is None:
         args.freq = dataset_config.get("sampling_rate", 50)
+
+    # Default --hmm-csv-dir to storage/raw/{dataset}/events, where the
+    # consolidated_task{N}.csv event-marker files already live.
+    if args.hmm_csv_dir is None:
+        from config.paths import get_raw_dir
+        args.hmm_csv_dir = str(get_raw_dir(args.dataset) / "events")
 
     # ── Ingest mode ───────────────────────────────────────────────────────────
     if args.ingest:
