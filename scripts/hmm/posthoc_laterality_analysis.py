@@ -17,7 +17,11 @@ Three analyses:
      Output: cross-tab heatmap table across all tasks.
 
   3. HMM Probability vs Self-Reported Difficulty (Spearman correlation)
-     Correlate y_proba with q* task scores per task.
+     Correlate y_proba with q* task scores per task, across all 24
+     task x paradigm cells (all-subjects and within-patient families).
+     p-values are Benjamini-Hochberg FDR-corrected separately within each
+     family; significance assessed at FDR = 0.05 (q < 0.05). Uncorrected
+     p-values are reported alongside the corrected q-values.
      Also examines misclassified patients' q* scores.
      Output: correlation table + misclassification insight table.
 
@@ -40,6 +44,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy import stats
+from statsmodels.stats.multitest import multipletests
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -66,15 +71,9 @@ TASK_Q_COL = {
     4: "q4_back_wash", 5: "q5_knife", 6: "q6_recreational",
 }
 
-# CHAN_NAME channel groups — indices 0-based into the 18-feature vector
-CHAN_NAME = [
-    "head_pos_x", "head_pos_y", "head_pos_z",
-    "head_rot_x", "head_rot_y", "head_rot_z",
-    "left_hand_pos_x", "left_hand_pos_y", "left_hand_pos_z",
-    "left_hand_rot_x", "left_hand_rot_y", "left_hand_rot_z",
-    "right_hand_pos_x", "right_hand_pos_y", "right_hand_pos_z",
-    "right_hand_rot_x", "right_hand_rot_y", "right_hand_rot_z",
-]
+# Channel-group index ranges — these assume the standard xdash sensor layout
+# (head, left hand, right hand, 6 DoF each). channel_names themselves are
+# loaded per-dataset in main() via load_dataset_config(args.dataset)["channels"].
 HEAD_IDX  = list(range(0, 6))
 LEFT_IDX  = list(range(6, 12))
 RIGHT_IDX = list(range(12, 18))
@@ -342,7 +341,8 @@ def build_subject_pred_map(results, ckpt, df_px):
 # ANALYSIS 1 — Laterality × Feature Importance
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def compute_laterality_importance(all_results: list, px_meta: pd.DataFrame) -> pd.DataFrame:
+def compute_laterality_importance(all_results: list, px_meta: pd.DataFrame,
+                                    channel_names: list) -> pd.DataFrame:
     """
     For each task×paradigm, for each unilateral patient:
       - ipsi_rank:   mean rank (1=best) of ipsilateral hand channels
@@ -363,8 +363,8 @@ def compute_laterality_importance(all_results: list, px_meta: pd.DataFrame) -> p
         if not feat_imp:
             continue
 
-        # Build importance vector in CHAN_NAME order
-        imp_vec = np.array([feat_imp.get(ch, 0.0) for ch in CHAN_NAME])
+        # Build importance vector in channel_names order
+        imp_vec = np.array([feat_imp.get(ch, 0.0) for ch in channel_names])
 
         # Ranks (1 = most important)
         ranks = imp_vec.argsort()[::-1].argsort() + 1  # 1-based
@@ -625,11 +625,30 @@ def compute_proba_difficulty_correlation(all_results: list,
                 "pv_all":        pv_all,
                 "rho_patients":  rho_px,
                 "pv_patients":   pv_px,
-                "sig_all":       "✓" if (pd.notna(pv_all) and pv_all < 0.05) else "",
-                "sig_patients":  "✓" if (pd.notna(pv_px)  and pv_px  < 0.05) else "",
             })
 
     corr_df = pd.DataFrame(corr_rows)
+
+    # ── Benjamini-Hochberg FDR correction ──────────────────────────────────
+    # Applied separately within the all-subjects family and the
+    # within-patient family, across all 24 task x paradigm cells.
+    # Significance is assessed at FDR = 0.05 (q < 0.05); uncorrected
+    # p-values (pv_all / pv_patients) are kept alongside for reference.
+    def _bh_correct(pvals: pd.Series) -> pd.Series:
+        q = pd.Series(np.nan, index=pvals.index)
+        mask = pvals.notna()
+        if mask.sum() > 0:
+            _, q_vals, _, _ = multipletests(
+                pvals[mask].values, alpha=0.05, method="fdr_bh")
+            q[mask] = q_vals
+        return q
+
+    corr_df["q_all"]      = _bh_correct(corr_df["pv_all"]).round(4)
+    corr_df["q_patients"] = _bh_correct(corr_df["pv_patients"]).round(4)
+    corr_df["sig_all"]      = corr_df["q_all"].apply(
+        lambda q: "✓" if pd.notna(q) and q < 0.05 else "")
+    corr_df["sig_patients"] = corr_df["q_patients"].apply(
+        lambda q: "✓" if pd.notna(q) and q < 0.05 else "")
 
     # Misclassified patient insight
     miss_rows = []
@@ -978,21 +997,25 @@ def sheet_analysis2(ws, subj_df: pd.DataFrame, xtab_df: pd.DataFrame, paradigm: 
 
 def sheet_analysis3_corr(ws, corr_df: pd.DataFrame):
     """Sheet 4 — Spearman Correlation table."""
-    NCOLS = 11
+    NCOLS = 13
 
     title_row(ws, 1, NCOLS,
               "Analysis 3 — HMM Probability vs Self-Reported Difficulty  (Spearman ρ)", "1F4E79")
     note_row(ws, 2, NCOLS,
              "Spearman ρ between HMM y_proba and task-specific Q score (1=no difficulty … 5=unable). "
              "rho_all = all subjects (patients + controls). rho_patients = patients only. "
-             "✓ = p < 0.05. Strong positive correlation = HMM confidence aligns with self-reported impairment. "
+             "p-values are corrected for multiple comparisons across all 24 task x paradigm cells "
+             "using Benjamini-Hochberg FDR, applied separately within the all-subjects and "
+             "within-patient families. ✓ = q < 0.05 (FDR-corrected). Uncorrected p-values shown alongside. "
+             "Strong positive correlation = HMM confidence aligns with self-reported impairment. "
              "Paradigm 1 (all patients vs controls) shown first for interpretability.")
 
     r = 4
     COLS = [
         ("Task", 14), ("Paradigm", 22), ("N All", 7), ("N Patients", 9),
-        ("ρ All Subjects", 13), ("p All", 9), ("Sig?", 5),
-        ("ρ Patients Only", 13), ("p Patients", 9), ("Sig?", 5), ("Interpretation", 38),
+        ("ρ All Subjects", 13), ("p All", 9), ("q All (FDR)", 10), ("Sig?", 5),
+        ("ρ Patients Only", 13), ("p Patients", 9), ("q Patients (FDR)", 10), ("Sig?", 5),
+        ("Interpretation", 38),
     ]
     for ci, (lbl, w) in enumerate(COLS):
         hdr(ws, r, ci+1, lbl, C["navy"])
@@ -1000,10 +1023,10 @@ def sheet_analysis3_corr(ws, corr_df: pd.DataFrame):
     ws.row_dimensions[r].height = 18
     r += 1
 
-    def _interp(rho, pv):
-        if pd.isna(rho) or pd.isna(pv):
+    def _interp(rho, qv):
+        if pd.isna(rho) or pd.isna(qv):
             return "Insufficient data"
-        sig = pv < 0.05
+        sig = qv < 0.05
         strength = ("|ρ|>0.5 strong" if abs(rho) > 0.5 else
                     "|ρ|>0.3 moderate" if abs(rho) > 0.3 else "weak")
         direction = "positive (HMM↑ with difficulty↑)" if rho > 0 else "negative"
@@ -1024,14 +1047,16 @@ def sheet_analysis3_corr(ws, corr_df: pd.DataFrame):
             dat(ws, r, 5,  row["rho_all"],     bg, fmt="0.000",
                 bold=(pd.notna(row["rho_all"]) and abs(row["rho_all"]) > 0.3))
             dat(ws, r, 6,  row["pv_all"],      bg, fmt="0.0000")
-            dat(ws, r, 7,  row["sig_all"],     bg, bold=True,
+            dat(ws, r, 7,  row["q_all"],       bg, fmt="0.0000")
+            dat(ws, r, 8,  row["sig_all"],     bg, bold=True,
                 fc="375623" if row["sig_all"] == "✓" else "000000")
-            dat(ws, r, 8,  row["rho_patients"],bg, fmt="0.000",
+            dat(ws, r, 9,  row["rho_patients"],bg, fmt="0.000",
                 bold=(pd.notna(row["rho_patients"]) and abs(row["rho_patients"]) > 0.3))
-            dat(ws, r, 9,  row["pv_patients"], bg, fmt="0.0000")
-            dat(ws, r, 10, row["sig_patients"],bg, bold=True,
+            dat(ws, r, 10, row["pv_patients"], bg, fmt="0.0000")
+            dat(ws, r, 11, row["q_patients"],  bg, fmt="0.0000")
+            dat(ws, r, 12, row["sig_patients"],bg, bold=True,
                 fc="375623" if row["sig_patients"] == "✓" else "000000")
-            dat(ws, r, 11, _interp(row["rho_patients"], row["pv_patients"]),
+            dat(ws, r, 13, _interp(row["rho_patients"], row["q_patients"]),
                 bg, ha="left", wrap=True)
             ws.row_dimensions[r].height = 16
 
@@ -1043,7 +1068,7 @@ def sheet_analysis3_corr(ws, corr_df: pd.DataFrame):
     # Gradient on rho columns
     if not corr_df.empty:
         grad_scale(ws, "E", 5, r-1, "FFC7CE", "C6EFCE")
-        grad_scale(ws, "H", 5, r-1, "FFC7CE", "C6EFCE")
+        grad_scale(ws, "I", 5, r-1, "FFC7CE", "C6EFCE")
 
     ws.freeze_panes = "A5"
 
@@ -1253,10 +1278,13 @@ def main():
             sys.path.insert(0, str(_root))
             break
     from config.paths import get_experiments_dir, get_results_dir
+    from dataio.ingestion import load_dataset_config
 
     hmm_dir = Path(args.hmm_dir) if args.hmm_dir else get_experiments_dir(args.dataset)
     out_dir = Path(args.out) if args.out else get_results_dir(args.dataset) / "hmm" / "laterality"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    channel_names = load_dataset_config(args.dataset)["channels"]
 
     print(f"\n{'='*60}")
     print(f"  HMM Laterality Analysis")
@@ -1287,7 +1315,7 @@ def main():
 
     # ── Run analyses ──────────────────────────────────────────────────────────
     print("Running Analysis 1: Laterality × Feature Importance...")
-    detail_df = compute_laterality_importance(all_results, px_meta)
+    detail_df = compute_laterality_importance(all_results, px_meta, channel_names)
     # summary_df is now computed per-paradigm inside the workbook builder below
 
     print("Running Analysis 2: Dominant-Hand x Injured-Side Cross-Tabulation...")
@@ -1343,7 +1371,8 @@ def main():
 
     if not corr_df.empty:
         p1_corr = corr_df[corr_df["paradigm"] == 1][
-            ["task_label", "n_patients", "rho_patients", "pv_patients", "sig_patients"]]
+            ["task_label", "n_patients", "rho_patients", "pv_patients",
+             "q_patients", "sig_patients"]]
         print("Analysis 3 — Spearman ρ (patients only, paradigm 1):")
         print(p1_corr.to_string(index=False))
         print()
