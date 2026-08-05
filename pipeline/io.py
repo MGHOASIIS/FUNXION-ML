@@ -86,6 +86,21 @@ def save_predictions(results, subject_ids, task: int, paradigm: int,
                      model_name: str, method: str, save_dir: Path) -> pd.DataFrame:
     """Save per-sample predictions to CSV."""
     sids = results.subject_ids if results.subject_ids is not None else subject_ids
+
+    # Guard against the IDs and predictions coming from differently-ordered
+    # arrays (e.g. one built patients-first, the other controls-first) — this
+    # single check would have caught that exact class of bug.
+    if results.subject_ids is not None:
+        assert len(sids) == len(results.y_true), (
+            f"subject_ids length {len(sids)} != y_true length {len(results.y_true)}"
+        )
+        for sid, yt in zip(sids, results.y_true):
+            expected = 1 if str(sid).startswith("g1_") else 0
+            assert expected == int(yt), (
+                f"subject_id/y_true mismatch: {sid} implies label {expected}, "
+                f"got y_true={yt}"
+            )
+
     rows = []
     for sid, yt, yp, ypr in zip(sids, results.y_true, results.y_pred, results.y_proba):
         sid_str = str(sid)
