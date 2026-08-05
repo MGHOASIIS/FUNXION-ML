@@ -20,7 +20,7 @@ from sklearn.metrics import balanced_accuracy_score
 from joblib import parallel_backend, Parallel, delayed
 
 from models.base_model import BaseModel, ModelResults, PyTorchModelMixin
-from config.constants import CHAN_NAME, DEVICE
+from config.constants import DEVICE
 from utils.metrics import compute_metrics
 from utils.training import (
     EarlyStopping, build_loo_splits, resolve_fold_masks,
@@ -236,13 +236,15 @@ class RNNClassifier(nn.Module):
 class RNNModel(BaseModel, PyTorchModelMixin):
     """RNN model wrapper with LOO CV and hyperparameter search."""
     
-    def __init__(self, checkpoints_dir=None, patience=15, min_delta=1e-4, task=None, paradigm=None):
-        super().__init__(model_name="RNN", 
+    def __init__(self, checkpoints_dir=None, patience=15, min_delta=1e-4, task=None,
+                 paradigm=None, channel_names=None):
+        super().__init__(model_name="RNN",
                          checkpoints_dir=checkpoints_dir,
                          patience=patience,
                          min_delta=min_delta,
                          task=task,
-                         paradigm=paradigm)
+                         paradigm=paradigm,
+                         channel_names=channel_names)
         
     def train_and_evaluate(
         self,
@@ -533,10 +535,11 @@ class RNNModel(BaseModel, PyTorchModelMixin):
         
         # Normalize
         importance = importance / (importance.sum() + 1e-12)
-        
+
         # Create dictionary
+        ch_names = self.resolve_channel_names(len(importance))
         feature_imp = {
-            CHAN_NAME[i]: float(importance[i])
+            ch_names[i]: float(importance[i])
             for i in np.argsort(importance)[::-1]
         }
         
@@ -580,10 +583,9 @@ class RNNModel(BaseModel, PyTorchModelMixin):
         
         try:
             from models.rnn_model import RNNClassifier
-            from config.constants import DOFS
-            
+
             temp_model = RNNClassifier(
-                input_dim=DOFS,
+                input_dim=self.n_channels,
                 rnn_type=self.best_params["rnn_type"],
                 hidden_size=self.best_params["hidden_size"],
                 num_layers=self.best_params["num_layers"],

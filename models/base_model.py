@@ -26,12 +26,18 @@ class ModelResults:
 class BaseModel(ABC):
     """Abstract base class for all classification models."""
     
-    def __init__(self, model_name: str, checkpoints_dir=None, patience=None, min_delta=None, task=None, paradigm=None):
+    def __init__(self, model_name: str, checkpoints_dir=None, patience=None, min_delta=None,
+                 task=None, paradigm=None, channel_names=None):
         """
         Parameters
         ----------
         model_name : str
             Name of the model (e.g., 'HMM', 'CNN', 'RNN')
+        channel_names : list of str, optional
+            Names of the input channels/features, e.g. dataset_config["channels"].
+            Used for feature-importance labelling. If not provided, generic
+            "ch_{i}" labels are used (resolved lazily once the channel count
+            is known from the data — see resolve_channel_names()).
         """
         self.model_name = model_name
         self.best_params = None
@@ -41,6 +47,17 @@ class BaseModel(ABC):
         self.min_delta = min_delta
         self.task = task
         self.paradigm = paradigm
+        self.channel_names = channel_names
+        self.n_channels = len(channel_names) if channel_names is not None else None
+
+    def resolve_channel_names(self, n_channels: int) -> list:
+        """
+        Return self.channel_names if set (and matching n_channels), else
+        generic fallback labels ["ch_0", "ch_1", ...].
+        """
+        if self.channel_names is not None and len(self.channel_names) == n_channels:
+            return self.channel_names
+        return [f"ch_{i}" for i in range(n_channels)]
     
     @abstractmethod
     def train_and_evaluate(

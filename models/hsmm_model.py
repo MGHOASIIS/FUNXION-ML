@@ -55,7 +55,6 @@ from scipy.special import logsumexp
 
 from models.base_model import BaseModel, ModelResults
 from models.state_sequence_analysis import StateSequenceAnalysisMixin
-from config.constants import CHAN_NAME
 from utils.metrics import compute_metrics
 from utils.training import build_loo_splits, resolve_fold_masks, build_fold_record, print_best
 
@@ -397,14 +396,15 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
     shared with HMMModel.
     """
 
-    def __init__(self, checkpoints_dir=None, task=None, paradigm=None):
+    def __init__(self, checkpoints_dir=None, task=None, paradigm=None, channel_names=None):
         super().__init__(
             model_name="HSMM",
             checkpoints_dir=checkpoints_dir,
             patience=None,
             min_delta=None,
             task=task,
-            paradigm=paradigm
+            paradigm=paradigm,
+            channel_names=channel_names,
         )
 
         self.fitted_hsmm0: Optional[GaussianHSMM] = None   # control model
@@ -440,8 +440,12 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
         """
         if param_grid is None:
             try:
-                from config.hyperparameter import HSMM_PARAM_GRID
-                param_grid = HSMM_PARAM_GRID
+                from config.hyperparameter import HSMM_PARAM_GRID, HSMM_PARAM_OVERRIDES
+                param_grid = dict(HSMM_PARAM_GRID)
+                override = HSMM_PARAM_OVERRIDES.get((self.task, self.paradigm))
+                if override:
+                    print(f"[HSMM] Applying param override for T{self.task}_P{self.paradigm}: {override}")
+                    param_grid.update(override)
             except ImportError:
                 # Fallback if HSMM_PARAM_GRID not yet added to hyperparameter.py
                 param_grid = {
@@ -457,19 +461,32 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
         print(f"[HSMM] Evaluating {len(grid)} hyperparameter combinations...")
         print(f"[HSMM] Note: HSMM inference is O(T²) — expect ~2–4× slower than HMM")
 
-        # HSMM Viterbi is O(T²) — parallelism still helps across CV folds
-        with parallel_backend("loky", inner_max_num_threads=1):
-            results = Parallel(n_jobs=-1, verbose=10)(
-                delayed(self._loo_score)(
-                    params, X, y, cv_splits, subject_ids, unique_subjects
-                )
-                for params in grid
-            )
+        # HSMM_PARAM_GRID is a single fixed combo (see config/hyperparameter.py),
+        # so there's nothing to parallelize across here — the real cost lives
+        # in compute_feature_importance(), which is parallelized separately.
+        results = [
+            self._loo_score(params, X, y, cv_splits, subject_ids, unique_subjects)
+            for params in grid
+        ]
 
         best_result = max(results, key=lambda t: t[0])
-        best_score, best_params, y_true, y_pred, y_proba, per_fold_results = best_result
+        (best_score, best_params, y_true, y_pred, y_proba,
+         per_fold_results, subject_order) = best_result
 
         print_best("HSMM", best_params, best_score)
+
+        # Sanity check: every prediction's subject ID must agree with its own
+        # y_true label (g1_ tag -> label 1, g0_ tag -> label 0).
+        if subject_ids is not None:
+            assert len(subject_order) == len(y_true), (
+                f"subject_order length {len(subject_order)} != y_true length {len(y_true)}"
+            )
+            for sid, yt in zip(subject_order, y_true):
+                expected = 1 if str(sid).startswith("g1_") else 0
+                assert expected == int(yt), (
+                    f"subject_id/y_true mismatch: {sid} implies label {expected}, "
+                    f"got y_true={yt}"
+                )
 
         # Fit on full data for Phase-2 analysis
         print(f"\n[HSMM] Fitting on full data with best params for analysis ...")
@@ -530,7 +547,7 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
                     'y_true':       y_true.tolist(),
                     'y_pred':       y_pred.tolist(),
                     'y_proba':      y_proba.tolist(),
-                    'subject_ids':  subject_ids.tolist() if subject_ids is not None else [],
+                    'subject_ids':  subject_order.tolist() if subject_ids is not None else [],
                 },
                 'timestamp': datetime.now().isoformat()
             }, f, indent=2)
@@ -545,7 +562,7 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
             y_pred=y_pred,
             y_proba=y_proba,
             X_shape=(len(X), X[0].shape[1]),
-            subject_ids=subject_ids,
+            subject_ids=subject_order if subject_ids is not None else subject_ids,
             per_fold_results=per_fold_results
         )
 
@@ -561,8 +578,14 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
         """
         Run one full LOO CV pass for a given hyperparameter configuration.
         Identical to HMMModel._loo_score() except calls _fit_hsmm().
+
+        Returns an extra `subject_order` array vs. the historical signature:
+        subject_order[i] is the subject ID for y_true[i]/y_pred[i]/y_proba[i],
+        in fold-iteration order — NOT the original input subject_ids order.
+        Callers must use this array, not the raw input, when attaching IDs to
+        these predictions (see train_and_evaluate).
         """
-        y_true, y_pred, y_proba = [], [], []
+        y_true, y_pred, y_proba, subject_order = [], [], [], []
         per_fold_results = []
 
         for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
@@ -585,9 +608,12 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
                 **params
             )
 
+            # Normalise by sequence length (per-frame log-likelihood delta) so
+            # the score doesn't saturate sigmoid() to exactly 0/1 and stays
+            # comparable across subjects with different trial durations.
             fold_preds, fold_proba = [], []
             for seq in seqs_test:
-                delta = hsmm1.score(seq) - hsmm0.score(seq)
+                delta = (hsmm1.score(seq) - hsmm0.score(seq)) / len(seq)
                 prob  = self._stable_sigmoid(delta)
                 pred  = int(prob >= 0.5)
                 fold_preds.append(pred)
@@ -596,6 +622,7 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
             y_true.extend(y_test_list)
             y_pred.extend(fold_preds)
             y_proba.extend(fold_proba)
+            subject_order.extend(list(test_subjects))
 
             fold_ba = balanced_accuracy_score(y_test_list, fold_preds)
 
@@ -612,7 +639,8 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
             np.array(y_true),
             np.array(y_pred),
             np.array(y_proba),
-            per_fold_results
+            per_fold_results,
+            np.array(subject_order)
         )
 
     def _fit_hsmm(
@@ -671,31 +699,37 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
         unique_subjects = kwargs.get("unique_subjects", None)
 
         n_channels = X[0].shape[1]
+        ch_names = self.resolve_channel_names(n_channels)
 
         if IS_TEST:
             print("\n[HSMM] IS_TEST=True — returning uniform dummy importance")
             uniform = 1.0 / n_channels
-            return {ch: uniform for ch in CHAN_NAME}
+            return {ch: uniform for ch in ch_names}
 
         print("\n[HSMM] Computing feature importance via permutation "
-              f"({n_channels} channels × LOO CV) ...")
-
-        rng        = np.random.default_rng(42)
-        importance = np.zeros(n_channels)
+              f"({n_channels} channels × LOO CV, parallel across channels) ...")
 
         baseline_ba, *_ = self._loo_score(
             best_params, X, y, cv_splits, subject_ids, unique_subjects
         )
         print(f"  Baseline BA: {baseline_ba:.4f}")
 
-        for d in range(n_channels):
-            print(f"  Channel {d+1:2d}/{n_channels}: {CHAN_NAME[d]:<30}", end=" ")
-            seqs_perm = self._permute_channel(X, d, rng)
-            ba_d, *_  = self._loo_score(
-                best_params, seqs_perm, y, cv_splits, subject_ids, unique_subjects
+        # Independent, order-invariant seeds so results stay deterministic
+        # regardless of which worker finishes first.
+        child_seeds = np.random.SeedSequence(42).spawn(n_channels)
+
+        with parallel_backend("loky", inner_max_num_threads=1):
+            drops = Parallel(n_jobs=-1, verbose=10)(
+                delayed(self._channel_importance_drop)(
+                    X, y, d, best_params, cv_splits, subject_ids,
+                    unique_subjects, baseline_ba, child_seeds[d]
+                )
+                for d in range(n_channels)
             )
-            importance[d] = baseline_ba - ba_d
-            print(f"drop={importance[d]:+.4f}")
+
+        importance = np.array(drops)
+        for d in range(n_channels):
+            print(f"  Channel {d+1:2d}/{n_channels}: {ch_names[d]:<30} drop={importance[d]:+.4f}")
 
         importance = np.clip(importance, 0, None)
         denom = importance.sum()
@@ -705,7 +739,7 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
             importance = np.ones(n_channels) / n_channels
 
         feature_imp = {
-            CHAN_NAME[i]: float(importance[i])
+            ch_names[i]: float(importance[i])
             for i in np.argsort(importance)[::-1]
         }
 
@@ -714,6 +748,27 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
             print(f"  {i+1:2d}. {feat:<30}: {imp:.4f}")
 
         return feature_imp
+
+    def _channel_importance_drop(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        channel: int,
+        best_params: Dict,
+        cv_splits: list,
+        subject_ids: Optional[np.ndarray],
+        unique_subjects: Optional[np.ndarray],
+        baseline_ba: float,
+        seed: np.random.SeedSequence
+    ) -> float:
+        """Permute one channel and return the BA drop vs. baseline. Runs as a
+        joblib worker task, one per channel, in compute_feature_importance()."""
+        rng = np.random.default_rng(seed)
+        seqs_perm = self._permute_channel(X, channel, rng)
+        ba_d, *_ = self._loo_score(
+            best_params, seqs_perm, y, cv_splits, subject_ids, unique_subjects
+        )
+        return baseline_ba - ba_d
 
     @staticmethod
     def _permute_channel(seqs: list, channel: int, rng) -> list:

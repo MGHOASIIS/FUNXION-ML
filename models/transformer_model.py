@@ -22,7 +22,7 @@ from sklearn.model_selection import ParameterGrid
 from sklearn.metrics import balanced_accuracy_score
 
 from models.base_model import BaseModel, ModelResults, PyTorchModelMixin
-from config.constants import CHAN_NAME, DEVICE
+from config.constants import DEVICE
 from utils.metrics import compute_metrics
 from utils.training import (
     EarlyStopping, build_loo_splits, resolve_fold_masks,
@@ -239,6 +239,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
         min_delta: float = 1e-4,
         task=None,
         paradigm=None,
+        channel_names=None,
     ):
         super().__init__(
             model_name="Transformer",
@@ -247,6 +248,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
             min_delta=min_delta,
             task=task,
             paradigm=paradigm,
+            channel_names=channel_names,
         )
 
     def train_and_evaluate(
@@ -525,8 +527,9 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
         # Normalize
         importance = importance / (importance.sum() + 1e-12)
 
+        ch_names = self.resolve_channel_names(len(importance))
         feature_imp = {
-            CHAN_NAME[i]: float(importance[i])
+            ch_names[i]: float(importance[i])
             for i in np.argsort(importance)[::-1]
         }
 
@@ -555,10 +558,8 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
             return None
 
         try:
-            from config.constants import DOFS
-
             temp_model = TransformerClassifier(
-                input_dim=DOFS,
+                input_dim=self.n_channels,
                 d_model=self.best_params["d_model"],
                 nhead=self.best_params["nhead"],
                 num_layers=self.best_params["num_layers"],

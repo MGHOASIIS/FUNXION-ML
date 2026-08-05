@@ -24,7 +24,6 @@ from joblib import parallel_backend, Parallel, delayed
 
 from models.base_model import BaseModel, ModelResults
 from models.state_sequence_analysis import StateSequenceAnalysisMixin
-from config.constants import CHAN_NAME
 from utils.metrics import compute_metrics
 from utils.training import build_loo_splits, resolve_fold_masks, build_fold_record, print_best
 
@@ -44,7 +43,7 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
     training.
     """
 
-    def __init__(self, checkpoints_dir=None, task=None, paradigm=None):
+    def __init__(self, checkpoints_dir=None, task=None, paradigm=None, channel_names=None):
         """
         Parameters
         ----------
@@ -54,6 +53,9 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
             Task name — stored for downstream tracking
         paradigm : int or None
             Classification paradigm index — stored for downstream tracking
+        channel_names : list of str, optional
+            Input channel names, e.g. dataset_config["channels"]. Used for
+            feature-importance labelling.
 
         Note: patience and min_delta are not used by the HMM (no iterative
         training loop), but are accepted by BaseModel and left as None.
@@ -64,7 +66,8 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
             patience=None,
             min_delta=None,
             task=task,
-            paradigm=paradigm
+            paradigm=paradigm,
+            channel_names=channel_names,
         )
 
         # Stored after fit_for_analysis() — used by all analysis methods
@@ -75,7 +78,7 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         return self.fitted_hmm0 if cls_idx == 0 else self.fitted_hmm1
 
     # =========================================================================
-    # SECTION 1 — Classification pipeline (UNCHANGED from original)
+    # SECTION 1 — Classification pipeline
     # =========================================================================
 
     def train_and_evaluate(
@@ -126,9 +129,25 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
 
         # Select best configuration
         best_result = max(results, key=lambda t: t[0])
-        best_score, best_params, y_true, y_pred, y_proba, per_fold_results = best_result
+        (best_score, best_params, y_true, y_pred, y_proba,
+         per_fold_results, subject_order) = best_result
 
         print_best("HMM", best_params, best_score)
+
+        # Sanity check: every prediction's subject ID must agree with its own
+        # y_true label (g1_ tag → label 1, g0_ tag → label 0). This is the
+        # invariant that a patients-first/controls-first ordering mismatch
+        # between IDs and predictions would violate.
+        if subject_ids is not None:
+            assert len(subject_order) == len(y_true), (
+                f"subject_order length {len(subject_order)} != y_true length {len(y_true)}"
+            )
+            for sid, yt in zip(subject_order, y_true):
+                expected = 1 if str(sid).startswith("g1_") else 0
+                assert expected == int(yt), (
+                    f"subject_id/y_true mismatch: {sid} implies label {expected}, "
+                    f"got y_true={yt}"
+                )
 
         # ── Auto-fit on full data using best LOO CV params ────────────────────
         # This populates self.fitted_hmm0 and self.fitted_hmm1 so downstream
@@ -194,7 +213,7 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
                     'y_true':       y_true.tolist(),
                     'y_pred':       y_pred.tolist(),
                     'y_proba':      y_proba.tolist(),
-                    'subject_ids':  subject_ids.tolist() if subject_ids is not None else [],
+                    'subject_ids':  subject_order.tolist() if subject_ids is not None else [],
                 },
                 'timestamp': datetime.now().isoformat()
             }, f, indent=2)
@@ -209,7 +228,7 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
             y_pred=y_pred,
             y_proba=y_proba,
             X_shape=(len(X), X[0].shape[1]),
-            subject_ids=subject_ids,
+            subject_ids=subject_order if subject_ids is not None else subject_ids,
             per_fold_results=per_fold_results
         )
 
@@ -243,9 +262,15 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         Returns
         -------
         tuple
-            (balanced_accuracy, params, y_true, y_pred, y_proba, per_fold_results)
+            (balanced_accuracy, params, y_true, y_pred, y_proba, per_fold_results,
+             subject_order)
+            subject_order[i] is the subject ID that produced y_true[i]/y_pred[i]/
+            y_proba[i] — the fold-iteration order (sorted by np.unique(subject_ids)
+            inside build_loo_splits), NOT the original input subject_ids order.
+            Callers must use this array, not the raw input, when attaching IDs to
+            these predictions (see train_and_evaluate).
         """
-        y_true, y_pred, y_proba = [], [], []
+        y_true, y_pred, y_proba, subject_order = [], [], [], []
         per_fold_results = []
 
         for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
@@ -270,10 +295,15 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
                 **params
             )
 
-            # Score each test sequence
+            # Score each test sequence. The raw log-likelihood delta scales with
+            # sequence length (thousands of nats over a full 50Hz trial), which
+            # saturates sigmoid(delta) to exactly 0 or 1 and makes trials of
+            # different duration incomparable. Normalising by T_i (per-frame
+            # average log-likelihood delta) keeps the score graded and duration-
+            # independent.
             fold_preds, fold_proba = [], []
             for seq in seqs_test:
-                delta = hmm1.score(seq) - hmm0.score(seq)
+                delta = (hmm1.score(seq) - hmm0.score(seq)) / len(seq)
                 prob = self._stable_sigmoid(delta)
                 pred = int(prob >= 0.5)
                 fold_preds.append(pred)
@@ -282,6 +312,7 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
             y_true.extend(y_test_list)
             y_pred.extend(fold_preds)
             y_proba.extend(fold_proba)
+            subject_order.extend(list(test_subjects))
 
             fold_ba = balanced_accuracy_score(y_test_list, fold_preds)
 
@@ -298,7 +329,8 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
             np.array(y_true),
             np.array(y_pred),
             np.array(y_proba),
-            per_fold_results
+            per_fold_results,
+            np.array(subject_order)
         )
 
     def _fit_hmm(
@@ -405,13 +437,14 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         unique_subjects = kwargs.get("unique_subjects", None)
 
         n_channels = X[0].shape[1]
+        ch_names = self.resolve_channel_names(n_channels)
 
         # ── Dummy mode: skip permutation loop when IS_TEST=True ───────────────
         if IS_TEST:
             print("\n[HMM] IS_TEST=True — returning uniform dummy importance "
                   "(set IS_TEST=False for real permutation importance)")
             uniform = 1.0 / n_channels
-            feature_imp = {ch: uniform for ch in CHAN_NAME}
+            feature_imp = {ch: uniform for ch in ch_names}
             return feature_imp
 
         # ── Real permutation importance ───────────────────────────────────────
@@ -429,7 +462,7 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
 
         # Permute each channel and measure accuracy drop
         for d in range(n_channels):
-            print(f"  Channel {d+1:2d}/{n_channels}: {CHAN_NAME[d]:<30}", end=" ")
+            print(f"  Channel {d+1:2d}/{n_channels}: {ch_names[d]:<30}", end=" ")
             seqs_perm = self._permute_channel(X, d, rng)
             ba_d, *_ = self._loo_score(
                 best_params, seqs_perm, y, cv_splits, subject_ids, unique_subjects
@@ -448,7 +481,7 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
             importance = np.ones(n_channels) / n_channels
 
         feature_imp = {
-            CHAN_NAME[i]: float(importance[i])
+            ch_names[i]: float(importance[i])
             for i in np.argsort(importance)[::-1]
         }
 

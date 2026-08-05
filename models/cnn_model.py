@@ -21,7 +21,7 @@ from sklearn.metrics import balanced_accuracy_score
 from joblib import parallel_backend, Parallel, delayed
 
 from models.base_model import BaseModel, ModelResults, PyTorchModelMixin
-from config.constants import CHAN_NAME, DEVICE
+from config.constants import DEVICE
 from utils.metrics import compute_metrics
 from utils.training import (
     EarlyStopping, build_loo_splits, resolve_fold_masks,
@@ -142,7 +142,8 @@ class CNNClassifier(nn.Module):
 class CNNModel(BaseModel, PyTorchModelMixin):
     """CNN model wrapper with LOO CV, early stopping, and hyperparameter search."""
 
-    def __init__(self, checkpoints_dir=None, patience=10, min_delta=1e-4, task=None, paradigm=None):
+    def __init__(self, checkpoints_dir=None, patience=10, min_delta=1e-4, task=None,
+                 paradigm=None, channel_names=None):
         """
         Parameters
         ----------
@@ -156,6 +157,8 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             Task name (e.g. 'jar_opening') — stored for downstream tracking
         paradigm : int or None
             Classification paradigm index — stored for downstream tracking
+        channel_names : list of str, optional
+            Input channel names, e.g. dataset_config["channels"].
         """
         super().__init__(
             model_name="CNN",
@@ -163,7 +166,8 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             patience=patience,
             min_delta=min_delta,
             task=task,
-            paradigm=paradigm
+            paradigm=paradigm,
+            channel_names=channel_names,
         )
 
     def train_and_evaluate(
@@ -455,8 +459,9 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         # Normalize (mirrors RNN)
         importance = importance / (importance.sum() + 1e-12)
 
+        ch_names = self.resolve_channel_names(len(importance))
         feature_imp = {
-            CHAN_NAME[i]: float(importance[i])
+            ch_names[i]: float(importance[i])
             for i in np.argsort(importance)[::-1]
         }
 
@@ -505,10 +510,8 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             return None
 
         try:
-            from config.constants import DOFS  # DOFS = 18 input channels
-
             temp_model = CNNClassifier(
-                in_channels=DOFS,
+                in_channels=self.n_channels,
                 conv_channels=self.best_params["conv_channels"],
                 kernel_sizes=self.best_params["kernel_sizes"],
                 dropout_fc=self.best_params["dropout_fc"],
