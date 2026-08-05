@@ -114,7 +114,20 @@ else:
 
     HSMM_PARAM_GRID = {
         "covariance_type": ["diag"],
-        "n_components":    [2, 3, 4, 5],
+        "n_components":    [5],
         "n_iter":          [100],
-        "max_duration":    [100, 200],
+        "max_duration":    [100],  # 5s @ 50Hz — was 100 (2s), which forced
+                                    # fragmentation of any real dwell longer
+                                    # than 2s since HSMM disallows self-loops.
+                                    # Measured ~2.4x per-score() cost vs 100;
+                                    # 500 measured ~4.5-4.9x, risking the 48h
+                                    # HPC wall-time limit on a full LOO run.
+    }
+
+    # Per-(task, paradigm) overrides, merged onto HSMM_PARAM_GRID above.
+    # HSMM's O(T²) inference makes a real grid search impractical per combo
+    # (~30h each), so known-good n_components values are pinned here instead.
+    HSMM_PARAM_OVERRIDES = {
+        (1, 2): {"n_components": [5]},
+        (4, 2): {"n_components": [8]},
     }
