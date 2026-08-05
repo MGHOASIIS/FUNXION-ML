@@ -25,7 +25,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 
-from config.constants import CHAN_NAME
 from dataclasses import dataclass
 
 
@@ -333,13 +332,30 @@ class StateSequenceAnalysisMixin:
                 prog = None
 
             events.append({
-                'event_name': str(row['event']),
+                'event_name': self._label_with_hand(str(row['event']), hand),
                 'timestamp':  float(row['timestamp']),
                 'hand_used':  hand,
                 'progress':   prog,
             })
 
         return events
+
+    @staticmethod
+    def _label_with_hand(event_name: str, hand_used: Optional[str]) -> str:
+        """
+        Append '- left'/'- right' to an event label when hand_used is known.
+
+        hand_used comes from the CSV as e.g. "Left hand used" — this pulls
+        out just the side so plots/alignment CSVs read "Lid grabbed - right"
+        instead of the ambiguous "Lid grabbed" (which hand grabbed the lid
+        varies by subject and even switches mid-session for some).
+        """
+        if not hand_used:
+            return event_name
+        side = hand_used.split()[0].lower()
+        if side not in ('left', 'right'):
+            return event_name
+        return f"{event_name} - {side}"
 
     def align_states_with_events(
         self,
@@ -613,7 +629,7 @@ class StateSequenceAnalysisMixin:
         model : optional
             Fitted model to inspect (defaults to the fitted class-1 model)
         channel_names : List[str], optional
-            18 channel names (defaults to CHAN_NAME from constants)
+            18 channel names (defaults to self.channel_names)
         title_suffix : str
             Appended to the figure title (e.g. 'Patient Model — Task 1')
         n_top_highlight : int
@@ -625,12 +641,12 @@ class StateSequenceAnalysisMixin:
             if model is None:
                 raise RuntimeError("Call fit_for_analysis() first.")
 
-        if channel_names is None:
-            channel_names = CHAN_NAME
-
         means = model.means_           # (n_states, n_features)
         n_states = model.n_components
         n_features = means.shape[1]
+
+        if channel_names is None:
+            channel_names = self.resolve_channel_names(n_features)
 
         fig, axes = plt.subplots(
             n_states, 1,
@@ -840,13 +856,14 @@ class StateSequenceAnalysisMixin:
 
         # ── Signal panels: one per sensor group ───────────────────────────────
         line_colors = ["#2166ac", "#d6604d", "#4dac26"]  # blue, red, green
+        channel_names = self.resolve_channel_names(sequence.shape[1])
 
         for row_idx, (group_label, ch_indices) in enumerate(sensor_groups):
             ax = axes_signal[row_idx]
             _shade_states(ax, alpha=0.18)
 
             for ci, ch_idx in enumerate(ch_indices):
-                ch_name   = CHAN_NAME[ch_idx].split("_")[-1]   # x / y / z
+                ch_name   = channel_names[ch_idx].split("_")[-1]   # x / y / z
                 ax.plot(time, sequence[:, ch_idx],
                         color=line_colors[ci],
                         linewidth=0.7, alpha=0.85,
@@ -1058,7 +1075,7 @@ class StateSequenceAnalysisMixin:
         model : optional
             Defaults to the fitted class-1 model
         channel_names : List[str], optional
-            Defaults to CHAN_NAME
+            Defaults to self.channel_names
 
         Returns
         -------
@@ -1072,11 +1089,11 @@ class StateSequenceAnalysisMixin:
             if model is None:
                 raise RuntimeError("Call fit_for_analysis() first.")
 
-        if channel_names is None:
-            channel_names = CHAN_NAME
-
         means    = model.means_     # (n_states, n_features)
         n_states, n_features = means.shape
+
+        if channel_names is None:
+            channel_names = self.resolve_channel_names(n_features)
 
         # ── Why previous approaches failed for position channels ──────────────
         #
@@ -1205,11 +1222,11 @@ class StateSequenceAnalysisMixin:
         if fitted0 is None or fitted1 is None:
             raise RuntimeError("Call fit_for_analysis() first.")
 
-        if channel_names is None:
-            channel_names = CHAN_NAME
-
         m0 = fitted0.means_   # (n_states, n_features)
         m1 = fitted1.means_
+
+        if channel_names is None:
+            channel_names = self.resolve_channel_names(m1.shape[1])
 
         if m0.shape[0] != m1.shape[0]:
             raise ValueError(
@@ -1277,7 +1294,9 @@ class StateSequenceAnalysisMixin:
         save_path : Path, optional
         """
         if channel_names is None:
-            channel_names = CHAN_NAME
+            # state_importance is keyed by channel name already (see
+            # compute_state_specific_importance), so reuse that ordering.
+            channel_names = list(next(iter(state_importance.values())).keys())
 
         if title is None:
             title = f'{self._title_prefix()}State-Specific Feature Importance'
