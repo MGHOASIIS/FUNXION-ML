@@ -291,6 +291,20 @@ def stage_merge(args):
     checkpoints_dir = experiment_dir / "model_checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
+    # Config snapshot, matching pipeline/runner.py's run_experiment() (config.json
+    # written as soon as the experiment dir exists) so staged and monolithic runs
+    # are discoverable the same way by downstream tooling.
+    with open(experiment_dir / "config.json", "w") as f:
+        json.dump({
+            "dataset": args.dataset,
+            "task": args.task,
+            "paradigm": args.paradigm,
+            "model": "hsmm",
+            "method": "variable_length",
+            "timestamp": timestamp_tag,
+            "diagnostics_enabled": True,
+        }, f, indent=2)
+
     best_path = checkpoints_dir / f"HSMM_T{args.task}_P{args.paradigm}_BA{best_score:.4f}_{timestamp_tag}.json"
     with open(best_path, "w") as f:
         json.dump({
@@ -396,7 +410,7 @@ def stage_diagnostics(args):
         y_true=y_true, y_pred=y_pred, y_proba=y_proba,
         X_shape=(len(X), X[0].shape[1]), subject_ids=subject_ids, per_fold_results=[],
     )
-    save_results(results_obj, args.task, args.paradigm, "HSMM", "variable_length",
+    results_dict = save_results(results_obj, args.task, args.paradigm, "HSMM", "variable_length",
                  results_dir, dataset_config)
     save_predictions(results_obj, subject_ids, args.task, args.paradigm, "HSMM",
                       "variable_length", results_dir)
@@ -459,6 +473,47 @@ def stage_diagnostics(args):
             )
         else:
             print(f"  Event CSV not found at {csv_path} — alignment skipped")
+
+    diagnostic_results = {
+        "hsmm_analysis": {
+            "n_components":           params.get("n_components", 2),
+            "covariance_type":        params.get("covariance_type", "diag"),
+            "global_importance":      global_imp,
+            "global_importance_ctrl": global_imp_ctrl,
+        }
+    }
+
+    # Summary, matching pipeline/runner.py's run_experiment() (summary.json
+    # written once evaluation/figures/results/diagnostics all complete) so
+    # staged and monolithic runs are discoverable the same way downstream.
+    summary = {
+        "experiment_name": experiment_dir.name,
+        "dataset": args.dataset,
+        "config": {"task": args.task, "paradigm": args.paradigm,
+                   "model": "hsmm", "method": "variable_length"},
+        "results": results_dict,
+        "evaluation": {
+            "accuracy":          getattr(eval_results, "accuracy", None),
+            "balanced_accuracy": getattr(eval_results, "balanced_accuracy", None),
+            "auc_roc":           getattr(eval_results, "auc_roc", None),
+            "auc_roc_ci":        getattr(eval_results, "auc_roc_ci", None),
+        },
+    }
+    if diagnostic_results:
+        summary["diagnostics"] = {
+            "overfitting_risk":    diagnostic_results.get("overfitting", {}).get("risk", "N/A"),
+            "generalization_gap":  diagnostic_results.get("overfitting", {}).get("generalization_gap", "N/A"),
+        }
+
+    class _NpEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, np.integer):  return int(obj)
+            if isinstance(obj, np.floating): return float(obj)
+            if isinstance(obj, np.ndarray):  return obj.tolist()
+            return super().default(obj)
+
+    with open(experiment_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2, cls=_NpEncoder)
 
     print(f"\n[diagnostics] Complete — outputs in {experiment_dir}")
 
