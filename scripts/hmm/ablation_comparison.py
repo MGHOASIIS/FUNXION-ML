@@ -468,10 +468,10 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--exp-dir",     default="experiments_abl",
-                   help="Root experiment dir (default: experiments). "
+    p.add_argument("--exp-dir",     default="results/experiments_abl",
+                   help="Root experiment dir (default: results/experiments_abl). "
                         "HPC: /home/singh.vishwa/xdash2/experiments")
-    p.add_argument("--out-dir",     default="ablation_results")
+    p.add_argument("--out-dir",     default="results/ablation")
     p.add_argument("--metric",      default="ba",
                    choices=["ba", "auc", "recall", "precision", "f1"])
     p.add_argument("--task",        type=int, default=None, choices=range(1, 7))

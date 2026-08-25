@@ -1,22 +1,30 @@
-Archived/
-# *.xlsx
-# *.csv
-# *.json
-*.png
-environment.yml
+# ── Python / editor artefacts ─────────────────────────────────────────────────
+.claude/
+.venv/
+.pytest_cache/
 __pycache__/
-experiments/
-experiments_from_hpc/
-experiments_abl/
-logs/
-logs_abl/
-hmm-results/
-nn-models-results/
-logs_from_hpc/
-data/px/
-data/fx/
-# data/pickled_datasets/_backup_pre_unwrap/
-_backup_pre_unwrap/
-old_results/
-ablation_results/
-# funxion_output/
+*.pyc
+*.pyo
+.DS_Store
+*.egg-info/
+
+# ── Storage — heavy / private data, never push to git ─────────────────────────
+# Raw recordings, pickled datasets, and all results live under storage/.
+# Set XDASH_STORAGE_DIR env var to relocate (e.g. HPC scratch).
+storage/
+
+# Longitudinal test sessions
+test_sub_NM/
+tests/
+
+# ── Binary ML artefacts ───────────────────────────────────────────────────────
+*.pkl
+*.pt
+*.h5
+*.hdf5
+
+# ── Misc development files ────────────────────────────────────────────────────
+environment.yml
+documentation/
+tem.txt
+*.tmp

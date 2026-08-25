@@ -1,80 +1,63 @@
 """
-Path configuration for the XDash project.
+Path configuration.
+
+All heavy / private data (raw recordings, pickled datasets, results) lives
+under STORAGE_DIR, which is gitignored.  Set the env var XDASH_STORAGE_DIR
+to relocate storage to a different drive or HPC scratch space.
+
+Code paths (dataset profiles, model source, scripts) remain under PROJECT_ROOT
+and are tracked in git as normal.
 """
 from pathlib import Path
+import os
 
-# Base directories
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
-EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
+DATASETS_DIR = PROJECT_ROOT / "datasets"
 
-# Data files
-PATIENT_DETAILS = DATA_DIR / "xdash_px_details.xlsx"
-
-def get_pickled_dataset_path(task: int, data_type: str) -> Path:
-    """Get path to pickled dataset."""
-    return DATA_DIR / "pickled_datasets" / f"{data_type}_data_task{task}.pkl"
+# Override via env var for HPC / custom storage locations.
+STORAGE_DIR = Path(os.environ.get("XDASH_STORAGE_DIR", str(PROJECT_ROOT / "storage")))
 
 
-def get_event_window_path(task: int, group: str) -> Path:
-    """
-    Get path to pre-generated event-window pickled dataset.
+# ---------------------------------------------------------------------------
+# Dataset-namespaced accessors
+# ---------------------------------------------------------------------------
 
-    Parameters
-    ----------
-    task : int
-        Task number (1–6)
-    group : str
-        'g1' (patients / condition group) or 'g0' (controls)
-
-    Returns
-    -------
-    Path
-        e.g. data/pickled_datasets/event_windows/g1_data_task1.pkl
-    """
-    return DATA_DIR / "pickled_datasets" / "event_window" / f"{group}_data_task{task}.pkl"
-
-# Create necessary directories
-for directory in [DATA_DIR, EXPERIMENTS_DIR]:
-    directory.mkdir(parents=True, exist_ok=True)
+def get_dataset_config_path(dataset: str) -> Path:
+    return DATASETS_DIR / dataset / "dataset.yaml"
 
 
-def get_experiment_dir(experiment_name: str) -> Path:
-    """
-    Get or create experiment directory.
-    
-    Parameters
-    ----------
-    experiment_name : str
-        Name of experiment (will be timestamped)
-    
-    Returns
-    -------
-    Path
-        Experiment directory path
-    """
-    from datetime import datetime
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = EXPERIMENTS_DIR / f"{experiment_name}_{timestamp}"
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    return exp_dir
+def get_raw_dir(dataset: str) -> Path:
+    return STORAGE_DIR / "raw" / dataset
 
 
-def get_latest_experiment(pattern: str = "*") -> Path:
-    """
-    Get most recent experiment directory matching pattern.
-    
-    Parameters
-    ----------
-    pattern : str
-        Glob pattern (e.g., "RNN_T1_P1_*")
-    
-    Returns
-    -------
-    Path
-        Latest experiment directory
-    """
-    experiments = sorted(EXPERIMENTS_DIR.glob(pattern))
-    if not experiments:
-        raise FileNotFoundError(f"No experiments found matching: {pattern}")
-    return experiments[-1]
+def get_pickled_dir(dataset: str) -> Path:
+    return STORAGE_DIR / "pickled" / dataset
+
+
+def get_results_dir(dataset: str) -> Path:
+    return STORAGE_DIR / "results" / dataset
+
+
+def get_experiments_dir(dataset: str) -> Path:
+    return get_results_dir(dataset) / "experiments"
+
+
+def get_metadata_path(dataset: str, filename: str) -> Path:
+    return get_raw_dir(dataset) / filename
+
+
+def get_pickled_dataset_path(task: int, data_type: str, dataset: str = "xdash") -> Path:
+    """Return path to a per-task pickled dataset file."""
+    return get_pickled_dir(dataset) / f"{data_type}_data_task{task}.pkl"
+
+
+def get_event_window_path(task: int, group: str, dataset: str = "xdash") -> Path:
+    """Return path to an event-window pickled dataset file."""
+    return get_pickled_dir(dataset) / "event_window" / f"{group}_data_task{task}.pkl"
+
+
+def get_paper_dir(area: str) -> Path:
+    """Output dir for generated paper figures/tables (see paper/{area}/ for
+    the scripts that write here). Not dataset-namespaced — a paper figure
+    may combine results across datasets/tasks."""
+    return STORAGE_DIR / "paper" / area

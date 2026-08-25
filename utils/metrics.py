@@ -84,9 +84,15 @@ def auc_ci_bootstrap(
     
     for _ in range(n_boot):
         idx = rng.randint(0, n, n)
+        if len(np.unique(y_true[idx])) < 2:
+            continue  # skip draws where only one class is present
         aucs.append(roc_auc_score(y_true[idx], y_proba[idx]))
-    
+
+    if not aucs:
+        nan = float("nan")
+        return nan, (nan, nan)
+
     lower = np.percentile(aucs, (1 - ci) * 50)
     upper = np.percentile(aucs, 100 - (1 - ci) * 50)
-    
+
     return np.mean(aucs), (lower, upper)

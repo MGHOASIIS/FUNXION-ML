@@ -4,26 +4,25 @@ generate_all_state_seqs.py
 Generates HMM state sequence plots for every subject across all
 task × paradigm combinations (T1–T6 × P1–P4 = up to 24 experiments).
 
-Output structure:
-    hmm-results/
-      state_seqs/
-        T1_P1/   (jar_opening | patients_vs_controls)
-          patients/    ← one PNG per subject in group 1
-          controls/    ← one PNG per subject in group 0
-          summary.csv
-        T1_P2/   (jar_opening | rct_vs_controls)
-          rct/
-          controls/
-          summary.csv
-        ...
-        T6_P4/   (hammering | rct_vs_other)
-          rct/
-          other/
-          summary.csv
+Output structure (default, under storage/results/<dataset>/hmm/state_seqs/):
+    state_seqs/
+      T1_P1/   (jar_opening | patients_vs_controls)
+        patients/    ← one PNG per subject in group 1
+        controls/    ← one PNG per subject in group 0
+        summary.csv
+      T1_P2/   (jar_opening | rct_vs_controls)
+        rct/
+        controls/
+        summary.csv
+      ...
+      T6_P4/   (hammering | rct_vs_other)
+        rct/
+        other/
+        summary.csv
 
-Checkpoint discovery:
-    Looks for:  hmm-results/T{t}-P{p}-HMM*/model_checkpoints/HMM_T{t}_P{p}_BA*.json
-    Falls back: hmm-results/*/HMM_T{t}_P{p}_BA*.json (recursive)
+Checkpoint discovery (default root: storage/results/<dataset>/experiments/):
+    Looks for:  <hmm-dir>/task{t}/paradigm{p}/HMM*/model_checkpoints/HMM_T{t}_P{p}_BA*.json
+    Falls back: <hmm-dir>/**/HMM_T{t}_P{p}_BA*.json (recursive)
     Skips T/P combinations where no checkpoint is found.
 
 Usage (from project root):
@@ -37,10 +36,10 @@ Usage (from project root):
     python scripts/generate_all_state_seqs.py --paradigms 1
 
     # Custom checkpoint root
-    python scripts/generate_all_state_seqs.py --hmm-dir hmm-results/
+    python scripts/generate_all_state_seqs.py --hmm-dir storage/results/xdash/experiments/
 
     # With event CSV overlay
-    python scripts/generate_all_state_seqs.py --csv-dir data/events/
+    python scripts/generate_all_state_seqs.py --csv-dir storage/raw/xdash/events/
 """
 import argparse
 import glob
@@ -85,16 +84,21 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Batch HMM state-sequence plots for all T×P combinations"
     )
+    p.add_argument("--dataset",    default="xdash",
+                   help="Dataset name (must match datasets/ folder). Default: xdash")
+    p.add_argument("--model",      choices=["hmm", "hsmm"], default="hmm",
+                   help="Which model's checkpoints to decode (default: hmm)")
     p.add_argument("--tasks",      nargs="+", type=int, default=list(range(1, 7)),
                    help="Task numbers to process (default: 1-6)")
     p.add_argument("--paradigms",  nargs="+", type=int, default=list(range(1, 5)),
                    help="Paradigm numbers to process (default: 1-4)")
-    p.add_argument("--hmm-dir",    default="experiments_from_hpc/",
-                   help="Root directory containing HMM experiment folders (default: hmm-results)")
-    p.add_argument("--out-dir",    default="hmm-results/state_seqs",
-                   help="Output root (default: hmm-results/state_seqs)")
+    p.add_argument("--hmm-dir",    default=None,
+                   help="Root directory containing experiment folders "
+                        "(default: storage/results/<dataset>/experiments)")
+    p.add_argument("--out-dir",    default=None,
+                   help="Output root (default: storage/results/<dataset>/<model>/state_seqs)")
     p.add_argument("--csv-dir",    default=None,
-                   help="Directory with consolidated_task{n}.csv event files (e.g. data/events/)")
+                   help="Directory with consolidated_task{n}.csv event files (e.g. storage/raw/xdash/events/)")
     p.add_argument("--sampling-rate", type=int, default=50,
                    help="Sampling rate in Hz (default: 50)")
     p.add_argument("--skip-existing", action="store_true",
@@ -125,20 +129,21 @@ def setup_project_path() -> bool:
 
 # ── Checkpoint discovery ──────────────────────────────────────────────────────
 
-def find_checkpoint(hmm_dir: Path, task: int, paradigm: int) -> Path | None:
+def find_checkpoint(hmm_dir: Path, task: int, paradigm: int, model: str = "hmm") -> Path | None:
     """
-    Search for the best HMM checkpoint for a given T/P combination.
+    Search for the best checkpoint for a given T/P combination.
 
-    Search order:
-      1. hmm-results/T{t}-P{p}-HMM*/model_checkpoints/HMM_T{t}_P{p}_BA*.json
-      2. hmm-results/**/HMM_T{t}_P{p}_BA*.json  (recursive fallback)
+    Search order (prefix is "HMM" or "HSMM" depending on `model`):
+      1. <hmm_dir>/task{t}/paradigm{p}/{PREFIX}*/model_checkpoints/{PREFIX}_T{t}_P{p}_BA*.json
+      2. <hmm_dir>/{PREFIX}_T{t}_P{p}/model_checkpoints/{PREFIX}_T{t}_P{p}_BA*.json
+      3. <hmm_dir>/**/{PREFIX}_T{t}_P{p}_BA*.json  (recursive fallback)
     """
-    # Primary: standard experiment folder layout
+    prefix = model.upper()
     patterns = [
-                str(hmm_dir/f"task{task}"/f"paradigm{paradigm}"/"HMM*"/"model_checkpoints"/f"results_T{task}_P{paradigm}_BA*.json"),
-                str(hmm_dir / f"HMM_T{task}_P{paradigm}" / "model_checkpoints"/f"HMM_T{task}_P{paradigm}_BA*.json"),
+        str(hmm_dir/f"task{task}"/f"paradigm{paradigm}"/f"{prefix}*"/"model_checkpoints"/f"{prefix}_T{task}_P{paradigm}_BA*.json"),
+        str(hmm_dir / f"{prefix}_T{task}_P{paradigm}" / "model_checkpoints"/f"{prefix}_T{task}_P{paradigm}_BA*.json"),
         # Recursive fallback
-        str(hmm_dir / "**" / f"HMM_T{task}_P{paradigm}_BA*.json"),
+        str(hmm_dir / "**" / f"{prefix}_T{task}_P{paradigm}_BA*.json"),
     ]
 
     for pattern in patterns:
@@ -161,29 +166,31 @@ def find_checkpoint(hmm_dir: Path, task: int, paradigm: int) -> Path | None:
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-_data_cache: dict = {}  # task → (patient_data, control_data)
+_data_cache: dict = {}  # (task, dataset) → (patient_data, control_data)
 
 
-def load_task_data(task: int) -> tuple:
-    """Load and cache patient/control data for a task."""
-    if task in _data_cache:
-        return _data_cache[task]
+def load_task_data(task: int, dataset: str = "xdash") -> tuple:
+    """Load and cache patient/control data for a task from storage/pickled/{dataset}/."""
+    key = (task, dataset)
+    if key in _data_cache:
+        return _data_cache[key]
 
-    for base in [Path("data/pickled_datasets"), Path("data")]:
-        p_path = base / f"patient_data_task{task}.pkl"
-        c_path = base / f"control_data_task{task}.pkl"
-        if p_path.exists() and c_path.exists():
-            with open(p_path, "rb") as f:
-                patients = pickle.load(f)
-            with open(c_path, "rb") as f:
-                controls = pickle.load(f)
-            print(f"  [Data] task={task}: {len(patients)} patients, {len(controls)} controls")
-            _data_cache[task] = (patients, controls)
-            return patients, controls
+    from config.paths import get_pickled_dataset_path
+    p_path = get_pickled_dataset_path(task, "patient", dataset=dataset)
+    c_path = get_pickled_dataset_path(task, "control", dataset=dataset)
+
+    if p_path.exists() and c_path.exists():
+        with open(p_path, "rb") as f:
+            patients = pickle.load(f)
+        with open(c_path, "rb") as f:
+            controls = pickle.load(f)
+        print(f"  [Data] task={task}: {len(patients)} patients, {len(controls)} controls")
+        _data_cache[key] = (patients, controls)
+        return patients, controls
 
     raise FileNotFoundError(
-        f"Pickled data not found for task {task}. "
-        "Expected: data/pickled_datasets/patient_data_task{task}.pkl"
+        f"Pickled data not found for task {task}, dataset '{dataset}'. "
+        f"Expected: {p_path}"
     )
 
 
@@ -306,13 +313,17 @@ def compute_state_segments(states: np.ndarray,
 
 def run_one(task: int, paradigm: int, ckpt_path: Path,
             out_root: Path, csv_dir: Path | None,
-            sampling_rate: int, min_run_frames: int) -> dict:
+            sampling_rate: int, min_run_frames: int,
+            dataset_config: dict, model: str = "hmm") -> dict:
     """
     Generate state sequence plots for one task/paradigm combination.
     Returns a dict with summary statistics.
     """
-    from models.hmm_model import HMMModel
-    from data.paradigms import ParadigmSelector
+    from dataio.paradigms import ParadigmSelector
+    if model == "hsmm":
+        from models.hsmm_model import HSMMModel as ModelCls
+    else:
+        from models.hmm_model import HMMModel as ModelCls
 
     tag       = f"T{task}_P{paradigm}"
     task_name = TASK_NAMES.get(task, f"task{task}")
@@ -325,7 +336,7 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
     (out_dir / g0_name).mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*65}")
-    print(f"  {tag}  |  {task_name}  |  {p_name}")
+    print(f"  {model.upper()} {tag}  |  {task_name}  |  {p_name}")
     print(f"  Checkpoint: {ckpt_path.name}")
     print(f"  Output:     {out_dir}")
     print(f"{'='*65}")
@@ -338,10 +349,10 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
           f"params={hp}")
 
     # Load raw data
-    patient_data, control_data = load_task_data(task)
+    patient_data, control_data = load_task_data(task, dataset_config.get("name", "xdash"))
 
     # Apply paradigm filter
-    selector = ParadigmSelector()
+    selector = ParadigmSelector(dataset_config)
     g1, g0 = selector.select_paradigm(patient_data, control_data, paradigm)
 
     # Preprocess
@@ -349,14 +360,17 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
     print(f"  Subjects: {len(X)}  "
           f"(g1={int(y.sum())} {g1_name}, g0={int((y==0).sum())} {g0_name})")
 
-    # Fit class-conditional HMMs on full data
-    hmm = HMMModel(task=task, paradigm=paradigm)
-    hmm.fit_for_analysis(
+    # Fit class-conditional models on full data
+    model_obj = ModelCls(task=task, paradigm=paradigm)
+    fit_kwargs = dict(
         X=X, y=y,
         n_components=hp["n_components"],
         covariance_type=hp["covariance_type"],
         n_iter=hp["n_iter"],
     )
+    if model == "hsmm":
+        fit_kwargs["max_duration"] = hp.get("max_duration", 200)
+    model_obj.fit_for_analysis(**fit_kwargs)
 
     # Event CSV for this task
     csv_path = None
@@ -372,10 +386,10 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
     transition_rows = []
 
     for i, (seq, label, sid) in enumerate(zip(X, y, sids)):
-        is_g1  = (label == 1)
-        model  = hmm.fitted_hmm1 if is_g1 else hmm.fitted_hmm0
-        subdir = out_dir / (g1_name if is_g1 else g0_name)
-        group  = g1_name if is_g1 else g0_name
+        is_g1     = (label == 1)
+        fitted    = model_obj._get_fitted(int(label))
+        subdir    = out_dir / (g1_name if is_g1 else g0_name)
+        group     = g1_name if is_g1 else g0_name
 
         # Strip preprocessor prefix (g1_0_PX01 → PX01)
         clean_sid = sid.split("_", 2)[-1] if sid.startswith(("g1_", "g0_")) else sid
@@ -383,14 +397,14 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
         print(f"  [{i+1:2d}/{len(X)}] {clean_sid:8s} ({group})", end=" ")
 
         # Decode
-        states, _, _ = hmm.decode_sequence(seq, model=model,
-                                            sampling_rate=sampling_rate)
+        states, _, _ = model_obj.decode_sequence(seq, model=fitted,
+                                                  sampling_rate=sampling_rate)
 
         # Events
         events = None
         if csv_path:
             try:
-                events = hmm.load_event_markers(
+                events = model_obj.load_event_markers(
                     csv_path=csv_path,
                     subject_id=clean_sid,
                     task_id=task,
@@ -401,7 +415,7 @@ def run_one(task: int, paradigm: int, ckpt_path: Path,
 
         # Plot
         save_path = subdir / f"state_seq_{clean_sid}.png"
-        hmm.plot_state_sequence_over_time(
+        model_obj.plot_state_sequence_over_time(
             sequence=seq,
             state_sequence=states,
             events=events,
@@ -488,13 +502,18 @@ def main():
         print("Run from your project root directory.")
         sys.exit(1)
 
-    hmm_dir  = Path(args.hmm_dir)
-    out_root = Path(args.out_dir)
+    from dataio.ingestion import load_dataset_config
+    from config.paths import get_experiments_dir, get_results_dir
+    dataset_config = load_dataset_config(args.dataset)
+
+    hmm_dir  = Path(args.hmm_dir) if args.hmm_dir else get_experiments_dir(args.dataset)
+    out_root = Path(args.out_dir) if args.out_dir else get_results_dir(args.dataset) / args.model / "state_seqs"
     csv_dir  = Path(args.csv_dir) if args.csv_dir else None
 
     out_root.mkdir(parents=True, exist_ok=True)
-    print(f"\n[Output root] {out_root.resolve()}")
-    print(f"[HMM dir]     {hmm_dir.resolve()}")
+    print(f"\n[Model]       {args.model.upper()}")
+    print(f"[Output root] {out_root.resolve()}")
+    print(f"[Experiments dir] {hmm_dir.resolve()}")
 
     # Build list of (task, paradigm) combinations to process
     combos = [(t, p) for t in args.tasks for p in args.paradigms]
@@ -515,9 +534,9 @@ def main():
             continue
 
         # Find checkpoint
-        ckpt_path = find_checkpoint(hmm_dir, task, paradigm)
+        ckpt_path = find_checkpoint(hmm_dir, task, paradigm, model=args.model)
         if ckpt_path is None:
-            print(f"[SKIP] {tag} — no checkpoint found in {hmm_dir}")
+            print(f"[SKIP] {tag} — no {args.model.upper()} checkpoint found in {hmm_dir}")
             no_ckpt.append(tag)
             continue
 
@@ -530,6 +549,8 @@ def main():
                 csv_dir=csv_dir,
                 sampling_rate=args.sampling_rate,
                 min_run_frames=int(args.min_run_s * args.sampling_rate),
+                dataset_config=dataset_config,
+                model=args.model,
             )
             results.append(result)
         except Exception as e:

@@ -24,29 +24,47 @@ directly to inference.py via --test-data.
 
 Usage
 -----
-    # Extract all 6 tasks from test_data/ and save to test_data/pickled/
-    python prepare_test_data.py --data-dir test_data/ --subject-id PX_NEW
+    # Extract all 6 tasks from storage/raw/xdash/test_data/ and save to storage/raw/xdash/test_data/pickled/
+    python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW
 
     # Extract only tasks 1 and 3
-    python prepare_test_data.py --data-dir test_data/ --subject-id PX_NEW --tasks 1 3
+    python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW --tasks 1 3
 
     # Dry run to check what would be extracted (no files written)
-    python prepare_test_data.py --data-dir test_data/ --subject-id PX_NEW --dry-run
+    python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW --dry-run
 
     # Specify a custom output directory
-    python prepare_test_data.py --data-dir test_data/ --subject-id PX_NEW \\
+    python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW \\
         --output-dir my_output/
 """
 
 import argparse
 import pickle
+import sys
 import numpy as np
 import pandas as pd
 from pathlib import Path
 
+# Allow running as `python inference/prepare_test_data.py` from the project
+# root — the script's own directory (inference/) is on sys.path by default,
+# not the project root, so top-level packages wouldn't otherwise be importable.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from dataio.ingestion import load_dataset_config
+from datasets.xdash.ingest import build_movement_cols, build_rot_col_indices
+
 
 # ---------------------------------------------------------------------------
-# Constants (kept in sync with generate_pickled_datasets.py)
+# Constants (kept in sync with datasets/xdash/ingest.py)
+#
+# TASK_NAMES here are the literal row labels used in Master.csv's "name"
+# column — a raw-ingestion-format detail, not the same as the human-readable
+# task names (e.g. "jar_opening") in datasets/{dataset}/dataset.yaml.
+# Raw PlayerMovement.csv column order / rotation-column indices come from
+# dataset.yaml's `channels:` list via build_movement_cols/build_rot_col_indices,
+# not hardcoded here — see datasets/xdash/ingest.py.
 # ---------------------------------------------------------------------------
 
 TASK_NAMES = {
@@ -57,21 +75,6 @@ TASK_NAMES = {
     5: "Task 5",
     6: "Task 6",
 }
-
-MOVEMENT_COLS = [
-    "TimeElapsed",
-    "HPosX", "HPosY", "HPosZ", "HRotX", "HRotY", "HRotZ",
-    "LPosX", "LPosY", "LPosZ", "LRotX", "LRotY", "LRotZ",
-    "RPosX", "RPosY", "RPosZ", "RRotX", "RRotY", "RRotZ",
-]
-
-SAMPLING_RATE = 50   # Hz
-N_FEATURES    = 18   # excludes TimeElapsed
-
-# Rotation column indices in the (T, 19) array (col 0 = TimeElapsed)
-ROT_COLS = [4, 5, 6,    # HRotX, HRotY, HRotZ
-            10, 11, 12, # LRotX, LRotY, LRotZ
-            16, 17, 18] # RRotX, RRotY, RRotZ
 
 
 # ---------------------------------------------------------------------------
@@ -148,13 +151,14 @@ def parse_master(master_path: Path) -> dict:
 
 def load_movement_slice(movement_path: Path,
                         start_time: float,
-                        end_time: float) -> np.ndarray | None:
+                        end_time: float,
+                        movement_cols: list) -> np.ndarray | None:
     """
     Load PlayerMovement.csv and return rows within [start_time, end_time).
 
     Returns
     -------
-    np.ndarray (T, 19) float32, or None on failure.
+    np.ndarray (T, len(movement_cols)) float32, or None on failure.
     """
     if not movement_path.exists():
         print(f"  ✗  PlayerMovement.csv not found at {movement_path}")
@@ -163,20 +167,21 @@ def load_movement_slice(movement_path: Path,
     df = pd.read_csv(movement_path)
     df.columns = [c.strip() for c in df.columns]
 
-    missing = [c for c in MOVEMENT_COLS if c not in df.columns]
+    missing = [c for c in movement_cols if c not in df.columns]
     if missing:
         print(f"  ✗  Missing columns in PlayerMovement.csv: {missing}")
         print(f"     Found: {list(df.columns)}")
         return None
 
-    df = df[MOVEMENT_COLS]
-    df["TimeElapsed"] = pd.to_numeric(df["TimeElapsed"], errors="coerce")
-    df = df.dropna(subset=["TimeElapsed"])
+    timestamp_col = movement_cols[0]
+    df = df[movement_cols]
+    df[timestamp_col] = pd.to_numeric(df[timestamp_col], errors="coerce")
+    df = df.dropna(subset=[timestamp_col])
 
     if end_time == float("inf"):
-        mask = df["TimeElapsed"] >= start_time
+        mask = df[timestamp_col] >= start_time
     else:
-        mask = (df["TimeElapsed"] >= start_time) & (df["TimeElapsed"] < end_time)
+        mask = (df[timestamp_col] >= start_time) & (df[timestamp_col] < end_time)
 
     sliced = df[mask].reset_index(drop=True)
 
@@ -192,15 +197,15 @@ def load_movement_slice(movement_path: Path,
 # Rotation fix (identical to generate_pickled_datasets.py)
 # ---------------------------------------------------------------------------
 
-def fix_rotation_cols(arr: np.ndarray) -> np.ndarray:
+def fix_rotation_cols(arr: np.ndarray, rot_cols: list) -> np.ndarray:
     """
-    Fix rotation discontinuities in a (T, 19) array.
+    Fix rotation discontinuities in a (T, C) array.
 
     1. np.unwrap — resolves 0/360 boundary jumps so the signal is continuous.
     2. Shift  — if the first frame > 180°, subtract 360 so it sits near 0°.
     """
     arr = arr.copy()
-    for col in ROT_COLS:
+    for col in rot_cols:
         arr[:, col] = np.rad2deg(np.unwrap(np.deg2rad(arr[:, col])))
         if arr[0, col] > 180:
             arr[:, col] -= 360
@@ -216,9 +221,13 @@ def main():
         description="Convert a single patient's raw XDash CSVs to per-task pickle files."
     )
     parser.add_argument(
+        "--dataset", default="xdash",
+        help="Dataset name (must match datasets/ folder). Default: xdash"
+    )
+    parser.add_argument(
         "--data-dir", required=True,
         help="Directory containing Master.csv and PlayerMovement.csv "
-             "(e.g. test_data/)"
+             "(e.g. storage/raw/xdash/test_data/)"
     )
     parser.add_argument(
         "--subject-id", required=True,
@@ -238,6 +247,11 @@ def main():
         help="Print extraction info without writing any files"
     )
     args = parser.parse_args()
+
+    dataset_config = load_dataset_config(args.dataset)
+    sampling_rate = dataset_config.get("sampling_rate", 50)
+    movement_cols = build_movement_cols(dataset_config)
+    rot_cols = build_rot_col_indices(dataset_config)
 
     data_dir   = Path(args.data_dir)
     output_dir = Path(args.output_dir) if args.output_dir \
@@ -286,17 +300,17 @@ def main():
             continue
 
         start_time, end_time = bounds
-        arr = load_movement_slice(movement_path, start_time, end_time)
+        arr = load_movement_slice(movement_path, start_time, end_time, movement_cols)
 
         if arr is None:
             print(f"    ✗  Skipped — no data extracted")
             continue
 
-        arr = fix_rotation_cols(arr)
+        arr = fix_rotation_cols(arr, rot_cols)
 
         n_frames   = len(arr)
-        duration_s = n_frames / SAMPLING_RATE
-        print(f"    ✓  {n_frames} frames  ({duration_s:.1f}s @ {SAMPLING_RATE}Hz)  "
+        duration_s = n_frames / sampling_rate
+        print(f"    ✓  {n_frames} frames  ({duration_s:.1f}s @ {sampling_rate}Hz)  "
               f"shape={arr.shape}")
 
         if args.dry_run:

@@ -11,8 +11,8 @@ from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 # ── Config ────────────────────────────────────────────────────────────────────
-EXPERIMENTS_DIR = "experiments_from_hpc"
-OUTPUT_FILE = "nn-models-results/xdash_results.xlsx"
+EXPERIMENTS_DIR = "results/experiments_from_hpc"
+OUTPUT_FILE = "results/nn_models/xdash_results.xlsx"
 
 FEATURE_COLS = [
     "head_pos_x","head_pos_y","head_pos_z",

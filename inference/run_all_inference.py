@@ -10,16 +10,16 @@ loaded only once per group — not once per model.
 Usage
 -----
     # Run all available checkpoints for one test subject
-    python run_all_inference.py --test-subject-dir test_data/PX41 --subject-id PX_41
+    python run_all_inference.py --test-subject-dir storage/raw/xdash/test_data/PX41 --subject-id PX_41
 
     # Filter to specific tasks or paradigms
-    python run_all_inference.py --test-subject-dir test_data/PX41 --subject-id PX_41 \\
+    python run_all_inference.py --test-subject-dir storage/raw/xdash/test_data/PX41 --subject-id PX_41 \\
         --tasks 1 2 --paradigms 1 2
 
     # Custom experiments and output paths
     python run_all_inference.py \\
-        --test-subject-dir test_data/PX41 --subject-id PX_41 \\
-        --experiments-dir experiments_from_hpc \\
+        --test-subject-dir storage/raw/xdash/test_data/PX41 --subject-id PX_41 \\
+        --experiments-dir results/experiments_from_hpc \\
         --output results/PX41_all_results.csv
 """
 
@@ -27,6 +27,7 @@ import argparse
 import json
 import pickle
 import re
+import sys
 from pathlib import Path
 from datetime import datetime
 
@@ -34,9 +35,16 @@ import numpy as np
 import pandas as pd
 import torch
 
-from config.constants import TASK_NAMES, PARADIGM_NAMES
-from data.paradigms import ParadigmSelector
-from data.preprocessors import PreprocessorFactory
+# Allow running as `python inference/run_all_inference.py` from the project
+# root — the script's own directory (inference/) is on sys.path by default,
+# not the project root, so top-level packages wouldn't otherwise be importable.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from dataio.ingestion import load_dataset_config
+from dataio.paradigms import ParadigmSelector
+from dataio.preprocessors import PreprocessorFactory
 from inference import (
     load_training_data,
     build_model,
@@ -44,6 +52,9 @@ from inference import (
     preprocess_test_truncate,
     run_inference,
 )
+
+# Set by main() before any helper runs
+_DATASET_CONFIG: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +82,10 @@ def discover_checkpoints(experiments_dir: Path) -> list[dict]:
             task_part     = next(p for p in parts if p.startswith("task") and p[4:].isdigit())
             paradigm_part = next(p for p in parts if p.startswith("paradigm") and p[8:].isdigit())
             exp_dir_name  = ckpt_path.parent.parent.name   # e.g. CNN_20260303_133635
+
+            if not pattern.match(exp_dir_name):
+                print(f"  [skip] Unexpected experiment folder name: {exp_dir_name}")
+                continue
 
             task_num     = int(task_part[4:])
             paradigm_num = int(paradigm_part[8:])
@@ -120,7 +135,7 @@ def build_train_cache(
     """
     unique_combos = sorted({(c["task"], c["paradigm"]) for c in checkpoints})
     cache = {}
-    selector = ParadigmSelector()
+    selector = ParadigmSelector(_DATASET_CONFIG)
 
     print(f"\n[Cache] Pre-loading training data for "
           f"{len(unique_combos)} task×paradigm combinations...\n")
@@ -137,7 +152,7 @@ def build_train_cache(
             # Preprocess for CNN (channels_first)
             pp_cf = PreprocessorFactory.create(
                 method=method, model_type="cnn",
-                resample_rate=resample_rate, original_rate=50,
+                resample_rate=resample_rate, original_rate=_DATASET_CONFIG.get("sampling_rate", 50),
             )
             X_cf, y_cf, _ = pp_cf.prepare_data(g1, g0)
             inner_cf = getattr(pp_cf, "inner", pp_cf)
@@ -146,7 +161,7 @@ def build_train_cache(
             # Preprocess for RNN/Transformer (3d)
             pp_3d = PreprocessorFactory.create(
                 method=method, model_type="rnn",
-                resample_rate=resample_rate, original_rate=50,
+                resample_rate=resample_rate, original_rate=_DATASET_CONFIG.get("sampling_rate", 50),
             )
             X_3d, y_3d, _ = pp_3d.prepare_data(g1, g0)
             inner_3d = getattr(pp_3d, "inner", pp_3d)
@@ -180,9 +195,15 @@ def run_one(
     ckpt_meta: dict,
     test_data: dict,
     train_cache: dict,
+    expected_subject_id: str,
 ) -> dict | None:
     """
     Run inference for one checkpoint against the test subject.
+
+    test_data is expected to contain exactly the one subject named by
+    expected_subject_id (--subject-id) — prepare_test_data.py guarantees
+    this, but we verify it rather than silently using whichever subject
+    happens to be first in the dict.
 
     Returns a result dict, or None if the run could not complete.
     """
@@ -223,6 +244,13 @@ def run_one(
             test_data, scaler, T_seq, out_fmt
         )
 
+        if subject_ids != [expected_subject_id]:
+            raise ValueError(
+                f"test_data for task={task} contains subjects {subject_ids}, "
+                f"expected exactly ['{expected_subject_id}'] (--subject-id). "
+                f"Check the pkl file passed to prepare_test_data.py."
+            )
+
         # Inference
         preds, probs = run_inference(model, X_test)
 
@@ -257,8 +285,11 @@ def print_summary(results: list[dict]):
         return
 
     df = pd.DataFrame(rows)
-    df["task_name"]     = df["task"].map(TASK_NAMES)
-    df["paradigm_name"] = df["paradigm"].map(PARADIGM_NAMES)
+    task_names     = _DATASET_CONFIG.get("tasks", {})
+    paradigm_names = {k: v.get("name", f"paradigm_{k}")
+                      for k, v in _DATASET_CONFIG.get("paradigms", {}).items()}
+    df["task_name"]     = df["task"].map(task_names)
+    df["paradigm_name"] = df["paradigm"].map(paradigm_names)
 
     print(f"\n{'='*85}")
     print(f"{'Task':<5} {'Paradigm':<8} {'Model':<13} {'Train BA':>8}  "
@@ -299,13 +330,15 @@ def main():
     parser = argparse.ArgumentParser(
         description="Batch inference over all task×paradigm×model checkpoints."
     )
+    parser.add_argument("--dataset", default="xdash",
+                        help="Dataset name (must match datasets/ folder). Default: xdash")
     parser.add_argument("--test-subject-dir", required=True,
                         help="Directory containing pickled/ subdir with test pkl files "
-                             "(e.g. test_data/PX41)")
+                             "(e.g. storage/raw/xdash/test_data/PX41)")
     parser.add_argument("--subject-id", required=True,
                         help="Subject ID used in the pkl dict (e.g. PX_41)")
-    parser.add_argument("--experiments-dir", default="experiments_from_hpc",
-                        help="Root directory of checkpoints (default: experiments_from_hpc)")
+    parser.add_argument("--experiments-dir", default="results/experiments_from_hpc",
+                        help="Root directory of checkpoints (default: results/experiments_from_hpc)")
     parser.add_argument("--method", default="truncate",
                         choices=["truncate", "sliding_window", "padding", "phase_shift"],
                         help="Preprocessing method (default: truncate)")
@@ -317,8 +350,11 @@ def main():
                         default=["CNN", "RNN", "TRANSFORMER"],
                         help="Restrict to specific models (default: CNN RNN TRANSFORMER)")
     parser.add_argument("--output", default=None,
-                        help="Output CSV path (default: all_inference_results.csv)")
+                        help="Output CSV path (default: results/inference/all_inference_results.csv)")
     args = parser.parse_args()
+
+    global _DATASET_CONFIG
+    _DATASET_CONFIG = load_dataset_config(args.dataset)
 
     experiments_dir   = Path(args.experiments_dir)
     test_subject_dir  = Path(args.test_subject_dir)
@@ -388,7 +424,7 @@ def main():
               f"model={ckpt_meta['model']:<12}  "
               f"BA={ckpt_meta['ba']:.4f}", end="  ... ", flush=True)
 
-        result = run_one(ckpt_meta, test_pkls[task], train_cache)
+        result = run_one(ckpt_meta, test_pkls[task], train_cache, args.subject_id)
 
         if result and "error" not in result:
             flag = "PATIENT (*)" if result["prediction"] == 1 else "control"
@@ -405,7 +441,7 @@ def main():
     print_summary(results)
 
     # Save results CSV
-    out_path = Path(args.output) if args.output else Path("test_data/all_inference_results.csv")
+    out_path = Path(args.output) if args.output else Path("results/inference/all_inference_results.csv")
     if results:
         pd.DataFrame(results).sort_values(
             ["task", "paradigm", "model"]

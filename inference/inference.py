@@ -29,6 +29,7 @@ Usage
 import argparse
 import json
 import pickle
+import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Tuple
@@ -40,10 +41,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 
-from config.constants import TASK_NAMES, PARADIGM_NAMES, DOFS, DEVICE
+# Allow running as `python inference/inference.py` from the project root —
+# the script's own directory (inference/) is on sys.path by default, not
+# the project root, so top-level packages (config, data, models) wouldn't
+# otherwise be importable.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from config.constants import DEVICE
 from config.paths import get_pickled_dataset_path
-from data.paradigms import ParadigmSelector
-from data.preprocessors import PreprocessorFactory
+from dataio.ingestion import load_dataset_config
+from dataio.paradigms import ParadigmSelector
+from dataio.preprocessors import PreprocessorFactory
+
+# Set by main() before any helper function runs
+_DATASET: str = "xdash"
+_DATASET_CONFIG: dict = {}
+_N_CHANNELS: int = 18  # overwritten in main() from dataset_config["channels"]
 
 
 # ---------------------------------------------------------------------------
@@ -52,14 +67,13 @@ from data.preprocessors import PreprocessorFactory
 
 def load_training_data(task: int) -> Tuple[Dict, Dict]:
     """Load patient and control pickles for a given task."""
-    patient_path = get_pickled_dataset_path(task, "patient")
-    control_path = get_pickled_dataset_path(task, "control")
+    patient_path = get_pickled_dataset_path(task, "patient", dataset=_DATASET)
+    control_path = get_pickled_dataset_path(task, "control", dataset=_DATASET)
     with open(patient_path, "rb") as f:
         patient_data = pickle.load(f)
     with open(control_path, "rb") as f:
         control_data = pickle.load(f)
-    print(f"[Data] Task {task} ({TASK_NAMES.get(task, task)}): "
-          f"{len(patient_data)} patients, {len(control_data)} controls")
+    print(f"[Data] Task {task}: {len(patient_data)} patients, {len(control_data)} controls")
     return patient_data, control_data
 
 
@@ -119,7 +133,7 @@ def preprocess_test_truncate(
     arrays, subject_ids = [], []
     for sid, arr in test_data.items():
         arr = _to_numpy(arr)
-        if arr.shape[1] > DOFS:
+        if arr.shape[1] > _N_CHANNELS:
             arr = arr[:, 1:]                        # drop optional timestamp column
         T = arr.shape[0]
         if T >= T_seq:
@@ -154,7 +168,7 @@ def preprocess_test_sliding_window(
     for sid, arr in test_data.items():
         subject_ids.append(sid)
         arr = _to_numpy(arr)
-        if arr.shape[1] > DOFS:
+        if arr.shape[1] > _N_CHANNELS:
             arr = arr[:, 1:]
         T = arr.shape[0]
         for start in range(0, T - window_size + 1, stride):
@@ -203,7 +217,7 @@ def build_model(model_name: str, params: Dict) -> nn.Module:
     if name == "CNN":
         from models.cnn_model import CNNClassifier
         return CNNClassifier(
-            in_channels=DOFS,
+            in_channels=_N_CHANNELS,
             conv_channels=params["conv_channels"],
             kernel_sizes=params["kernel_sizes"],
             dropout_fc=params["dropout_fc"],
@@ -213,7 +227,7 @@ def build_model(model_name: str, params: Dict) -> nn.Module:
     if name == "RNN":
         from models.rnn_model import RNNClassifier
         return RNNClassifier(
-            input_dim=DOFS,
+            input_dim=_N_CHANNELS,
             rnn_type=params["rnn_type"],
             hidden_size=params["hidden_size"],
             num_layers=params["num_layers"],
@@ -227,7 +241,7 @@ def build_model(model_name: str, params: Dict) -> nn.Module:
     if name == "TRANSFORMER":
         from models.transformer_model import TransformerClassifier
         return TransformerClassifier(
-            input_dim=DOFS,
+            input_dim=_N_CHANNELS,
             d_model=params["d_model"],
             nhead=params["nhead"],
             num_layers=params["num_layers"],
@@ -326,25 +340,26 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run XDash model inference on new test subjects."
     )
+    parser.add_argument("--dataset", default="xdash",
+                        help="Dataset name (must match datasets/ folder). Default: xdash")
     parser.add_argument("--checkpoint", required=True,
                         help="Path to best_model_BA*.pt checkpoint")
     parser.add_argument("--task", type=int, required=True,
-                        help="Task number (1–6)")
+                        help="Task number")
     parser.add_argument("--paradigm", type=int, required=True,
-                        help="Paradigm (1=patients_vs_controls, 2=rct_vs_controls, "
-                             "3=other_vs_controls, 4=rct_vs_other)")
+                        help="Paradigm number")
     parser.add_argument("--model", required=True,
                         choices=["cnn", "rnn", "transformer"],
                         help="Model type (must match the checkpoint)")
     parser.add_argument("--method", default="truncate",
                         choices=["truncate", "sliding_window", "padding", "phase_shift"],
                         help="Preprocessing method used during training")
-    parser.add_argument("--resample-rate", type=int, default=50,
-                        help="Sampling rate used during training (default 50 Hz)")
+    parser.add_argument("--resample-rate", type=int, default=None,
+                        help="Sampling rate used during training (default: dataset sampling_rate)")
 
     test_group = parser.add_mutually_exclusive_group(required=True)
     test_group.add_argument("--test-data", metavar="PKL",
-                            help="Pickle dict {subject_id: array (T, 18)}")
+                            help="Pickle dict {subject_id: array (T, C)}")
     test_group.add_argument("--test-csv-dir", metavar="DIR",
                             help="Directory of per-subject CSV files")
     test_group.add_argument("--test-csv", metavar="FILE",
@@ -353,6 +368,14 @@ def main():
     parser.add_argument("--output", default=None,
                         help="Output path (default: inference_results.json)")
     args = parser.parse_args()
+
+    # Load dataset config and expose as module globals so helpers above can use them
+    global _DATASET, _DATASET_CONFIG, _N_CHANNELS
+    _DATASET = args.dataset
+    _DATASET_CONFIG = load_dataset_config(args.dataset)
+    _N_CHANNELS = len(_DATASET_CONFIG["channels"])
+    if args.resample_rate is None:
+        args.resample_rate = _DATASET_CONFIG.get("sampling_rate", 50)
 
     # ------------------------------------------------------------------
     # 1. Load checkpoint
@@ -379,17 +402,16 @@ def main():
     print("\n[1/4] Loading training data to fit preprocessing pipeline...")
     patient_data, control_data = load_training_data(args.task)
 
-    selector = ParadigmSelector()
+    selector = ParadigmSelector(_DATASET_CONFIG)
     g1, g0 = selector.select_paradigm(patient_data, control_data, paradigm=args.paradigm)
-    print(f"  Paradigm {args.paradigm} ({PARADIGM_NAMES.get(args.paradigm)}): "
-          f"g1={len(g1)}, g0={len(g0)}")
+    print(f"  Paradigm {args.paradigm}: g1={len(g1)}, g0={len(g0)}")
 
     model_type = args.model.lower()
     preprocessor = PreprocessorFactory.create(
         method=args.method,
         model_type=model_type,
         resample_rate=args.resample_rate,
-        original_rate=50,
+        original_rate=_DATASET_CONFIG.get("sampling_rate", 50),
     )
     X_train, y_train, _ = preprocessor.prepare_data(g1, g0)
 
@@ -467,9 +489,9 @@ def main():
     results = {
         "checkpoint": str(ckpt_path),
         "task": args.task,
-        "task_name": TASK_NAMES.get(args.task, str(args.task)),
+        "task_name": _DATASET_CONFIG["tasks"].get(args.task, str(args.task)),
         "paradigm": args.paradigm,
-        "paradigm_name": PARADIGM_NAMES.get(args.paradigm, str(args.paradigm)),
+        "paradigm_name": _DATASET_CONFIG["paradigms"].get(args.paradigm, {}).get("name", str(args.paradigm)),
         "model": model_name,
         "method": args.method,
         "training_balanced_accuracy": ckpt["metrics"].get("balanced_accuracy"),

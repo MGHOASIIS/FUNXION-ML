@@ -35,7 +35,7 @@ from utils.visualization import (
     TrainingHistoryVisualizer
 )
 
-from config.constants import DEVICE, DOFS
+from config.constants import DEVICE
 
 
 class ComprehensiveModelMonitor:
@@ -501,12 +501,13 @@ class ComprehensiveModelMonitor:
                     aggregate='mean'
                 )
                 
-                print_importance_report(weight_imp_results, top_k=DOFS)
-                
+                n_features = len(weight_imp_results.feature_names)
+                print_importance_report(weight_imp_results, top_k=n_features)
+
                 imp_viz = ImportanceVisualizer()
                 imp_viz.plot_importance_bars(
                     weight_imp_results,
-                    top_k=DOFS,
+                    top_k=n_features,
                     save_path=self.figures_dir / "feature_importance.png"
                 )
                 
@@ -579,7 +580,7 @@ class ComprehensiveModelMonitor:
             clinical_interp = ClinicalInterpreter()
             interpretation = clinical_interp.interpret_sensor_importance(
                 importance_dict=all_results['feature_importance'],
-                top_k=DOFS
+                top_k=len(all_results['feature_importance'])
             )
             print(interpretation)
             
@@ -802,8 +803,8 @@ def run_complete_monitoring(
 
 # Example usage
 if __name__ == "__main__":
-    from config.constants import CHAN_NAME
-    
+    dummy_channel_names = [f"ch_{i}" for i in range(18)]
+
     # Create dummy model
     model = nn.Sequential(
         nn.Linear(18, 128),
@@ -840,5 +841,5 @@ if __name__ == "__main__":
         fold_results=fold_results,
         experiment_name="RNN_Task1_Paradigm1",
         save_dir=Path("diagnostics_output"),
-        feature_names=CHAN_NAME
+        feature_names=dummy_channel_names
     )

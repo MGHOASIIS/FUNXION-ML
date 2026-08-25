@@ -16,7 +16,7 @@
 #   $6  EXTRA_ARGS       any additional python flags as a single quoted string
 #                        e.g. "--target-rate 25 --original-rate 50"
 #                        pass "" if none
-#   $7  DATA_SOURCE      subject | event_window  (default: subject)
+#   $7  DATA_SOURCE      standard | event_window  (default: standard)
 #
 # Manual test examples:
 #   sbatch --time=06:00:00 run_ablation.sh 1 1 rnn padding           pad       ""        
@@ -39,7 +39,7 @@
 
 if [ "$#" -lt 6 ] || [ "$#" -gt 7 ]; then
     echo "ERROR: Expected 6 or 7 arguments: TASK PARADIGM MODEL METHOD ABLATION_GROUP EXTRA_ARGS [DATA_SOURCE]"
-    echo "Usage: sbatch run_ablation.sh <task> <paradigm> <model> <method> <ablation_group> \"<extra_args>\" [subject|event_window]"
+    echo "Usage: sbatch run_ablation.sh <task> <paradigm> <model> <method> <ablation_group> \"<extra_args>\" [standard|event_window]"
     exit 1
 fi
 
@@ -49,7 +49,7 @@ MODEL=$3
 METHOD=$4
 ABLATION_GROUP=$5
 EXTRA_ARGS=$6
-DATA_SOURCE=${7:-subject}
+DATA_SOURCE=${7:-standard}
 
 # Short tag embedded in job/experiment names to distinguish data sources
 if [ "${DATA_SOURCE}" = "event_window" ]; then DS_TAG="EW"; else DS_TAG="SBJ"; fi
@@ -105,7 +105,7 @@ BASE_ARGS="--task ${TASK} \
 
 # HMM-specific additions
 if [ "${MODEL}" == "hmm" ]; then
-    BASE_ARGS="${BASE_ARGS} --hmm-csv-dir data/events/"
+    BASE_ARGS="${BASE_ARGS} --hmm-csv-dir storage/raw/xdash/events/"
 else
     BASE_ARGS="${BASE_ARGS} --patience 15 --min-delta 1e-4"
 fi

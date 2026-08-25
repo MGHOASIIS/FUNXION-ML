@@ -1,0 +1,89 @@
+name: xdash
+sampling_rate: 50
+
+timestamp_column: TimeElapsed
+
+channels:
+  - head_pos_x
+  - head_pos_y
+  - head_pos_z
+  - head_rot_x
+  - head_rot_y
+  - head_rot_z
+  - left_hand_pos_x
+  - left_hand_pos_y
+  - left_hand_pos_z
+  - left_hand_rot_x
+  - left_hand_rot_y
+  - left_hand_rot_z
+  - right_hand_pos_x
+  - right_hand_pos_y
+  - right_hand_pos_z
+  - right_hand_rot_x
+  - right_hand_rot_y
+  - right_hand_rot_z
+
+tasks:
+  1: jar_opening
+  2: key_turning
+  3: cleaning
+  4: back_washing
+  5: cutting
+  6: hammering
+
+# Path relative to storage/raw/xdash/
+metadata_file: xdash_px_details.xlsx
+
+# Paradigm definitions.  Each filter selects a subset of the loaded data.
+# filter types:
+#   all             — use all subjects from this source
+#   subject_prefix  — keep subjects whose ID starts with `prefix`
+#   metadata        — keep subjects whose `column` value is in `values`
+#   metadata_exclude — keep subjects whose `column` value is NOT in `values`
+paradigms:
+  1:
+    name: patients_vs_controls
+    g1_filter:
+      source: patient
+      filter: all
+    g0_filter:
+      source: control
+      filter: all
+  2:
+    name: rct_vs_controls
+    g1_filter:
+      source: patient
+      filter: metadata
+      column: dia_code
+      values: [1]
+    g0_filter:
+      source: control
+      filter: subject_prefix
+      prefix: fx
+  3:
+    name: other_conditions_vs_controls
+    g1_filter:
+      source: patient
+      filter: metadata_exclude
+      column: dia_code
+      values: [1]
+    g0_filter:
+      source: control
+      filter: subject_prefix
+      prefix: fx
+  4:
+    name: rct_vs_other_conditions
+    g1_filter:
+      source: patient
+      filter: metadata
+      column: dia_code
+      values: [1]
+    g0_filter:
+      source: patient
+      filter: metadata_exclude
+      column: dia_code
+      values: [1]
+
+exclude_subjects:
+  g1: []
+  g0: []

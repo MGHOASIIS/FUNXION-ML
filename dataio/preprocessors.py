@@ -11,10 +11,10 @@ import torch
 from sklearn.preprocessing import StandardScaler
 from sklearn.manifold import MDS, Isomap, TSNE
 
-from data.transforms import (
+from dataio.transforms import (
     Downsample, TimeJitter, TimeWarping, MagnitudeWarping
 )
-from data.paradigms import extract_subject_id
+from dataio.paradigms import extract_subject_id
 
 
 class BasePreprocessor(ABC):
@@ -422,6 +422,13 @@ class PreprocessorFactory:
 
         if method == "truncate":
             preprocessor = TruncatePreprocessor(output_format=output_format)
+        elif method == "downsample_truncate":
+            # Functionally identical to truncate — the actual downsampling
+            # is applied generically below via ResamplingWrapper whenever
+            # resample_rate < original_rate. This method name exists so
+            # callers can pass an explicit target_rate/original_rate pair
+            # independent of the generic --freq resampling flag.
+            preprocessor = TruncatePreprocessor(output_format=output_format)
         elif method == "sliding_window":
             preprocessor = SlidingWindowPreprocessor(
                 output_format=output_format,
@@ -593,7 +600,7 @@ class DTWEmbeddingPreprocessor(BasePreprocessor):
         if self.method == "mds":
             embedder = MDS(
                 n_components=self.n_components,
-                metric="precomputed",
+                dissimilarity="precomputed",
                 random_state=42,
                 n_init=1,
             )
@@ -770,7 +777,7 @@ class AugmentedPreprocessor(BasePreprocessor):
 #         self.model_type = model_type
         
 #         # Your custom augmentations
-#         from data.transforms import TimeJitter, TimeWarping
+#         from dataio.transforms import TimeJitter, TimeWarping
 #         self.augmenters = [
 #             TimeJitter(sigma=0.01),
 #             TimeWarping(sigma=0.2, knot=4)

@@ -29,7 +29,7 @@
 #   --model MODEL         hmm | cnn | rnn | transformer (filter, default: all)
 #   --task TASK           1–6 (filter, default: all)
 #   --paradigm P          1–4 (filter, default: all)
-#   --data-source S       subject | event_window (default: subject)
+#   --data-source S       standard | event_window (default: standard)
 #   --dry-run             Preview without submitting
 #
 # Examples:
@@ -73,7 +73,7 @@ DRY_RUN=false
 FILTER_MODEL=""
 FILTER_TASK=""
 FILTER_PARADIGM=""
-DATA_SOURCE="subject"
+DATA_SOURCE="standard"
 
 METHODS=()
 FREQS=()
@@ -125,9 +125,9 @@ for M in "${METHODS[@]}"; do
     fi
 done
 
-if [[ ! " subject event_window " =~ " ${DATA_SOURCE} " ]]; then
+if [[ ! " standard event_window " =~ " ${DATA_SOURCE} " ]]; then
     echo "ERROR: Unknown data source '${DATA_SOURCE}'"
-    echo "  Valid options: subject event_window"
+    echo "  Valid options: standard event_window"
     exit 1
 fi
 
@@ -166,10 +166,10 @@ submit_job() {
         return
     fi
 
-    # Padding incompatible with HMM on subject data only
+    # Padding incompatible with HMM on standard (per-subject) data only
     # (allowed for event_window since windows are short and bounded)
-    if [ "${METHOD}" = "padding" ] && [ "${MODEL}" = "hmm" ] && [ "${SRC}" = "subject" ]; then
-        [ "${DRY_RUN}" = true ] && echo "[SKIPPED] padding incompatible with HMM on subject data — ${MODEL^^}_T${TASK}_P${PARADIGM}"
+    if [ "${METHOD}" = "padding" ] && [ "${MODEL}" = "hmm" ] && [ "${SRC}" = "standard" ]; then
+        [ "${DRY_RUN}" = true ] && echo "[SKIPPED] padding incompatible with HMM on standard data — ${MODEL^^}_T${TASK}_P${PARADIGM}"
         return
     fi
 

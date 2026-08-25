@@ -6,9 +6,9 @@
 #
 # Per-model defaults (hardcoded in run_single.sh):
 #   HMM         → variable_length, --diagnostics, --save-checkpoints,
-#                 --hmm-csv-dir data/events/
+#                 --hmm-csv-dir storage/raw/xdash/events/
 #   HSMM        → variable_length, --diagnostics, --save-checkpoints,
-#                 --hmm-csv-dir data/events/  (mirrors HMM; O(T²) → 96h limit)
+#                 --hmm-csv-dir storage/raw/xdash/events/  (mirrors HMM; O(T²) → 96h limit)
 #   CNN/RNN/TR  → truncate, --diagnostics, --save-checkpoints
 #
 # Usage:
@@ -108,12 +108,13 @@ for MODEL in "${MODELS[@]}"; do
             TASK_NAME="${TASK_NAMES[$TASK]}"
             PARADIGM_NAME="${PARADIGM_NAMES[$PARADIGM]}"
 
+            GRES=""
             case "${MODEL}" in
                 rnn)
                     TIME_LIMIT="08:00:00"
                     MEMORY="64G"
                     PARTITION="gpu"
-                    GRES="gpu:h200"
+                    GRES="gpu:h200:1"
                     ;;
                 cnn)
                     TIME_LIMIT="06:00:00"
@@ -136,7 +137,7 @@ for MODEL in "${MODELS[@]}"; do
                     TIME_LIMIT="08:00:00"
                     MEMORY="64G"
                     PARTITION="gpu"
-                    GRES="gpu:h200"
+                    GRES="gpu:h200:1"
                     ;;
             esac
 
@@ -156,9 +157,10 @@ for MODEL in "${MODELS[@]}"; do
                 --mail-user=singh.vishwa@northeastern.edu
             )
 
-            # GPU models get a GPU allocation; HMM and HSMM are CPU-only
+            # GPU models get a GPU allocation; HMM and HSMM are CPU-only.
+            # rnn/transformer pin to H200 via GRES; cnn takes any available GPU.
             if [ "${MODEL}" != "hmm" ] && [ "${MODEL}" != "hsmm" ]; then
-                SBATCH_CMD+=(--gres=gpu:1)
+                SBATCH_CMD+=(--gres="${GRES:-gpu:1}")
             fi
 
             SBATCH_CMD+=("${JOB_SCRIPT}" "${TASK}" "${PARADIGM}" "${MODEL}")
