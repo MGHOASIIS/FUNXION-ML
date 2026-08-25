@@ -54,3 +54,10 @@ def get_pickled_dataset_path(task: int, data_type: str, dataset: str = "xdash") 
 def get_event_window_path(task: int, group: str, dataset: str = "xdash") -> Path:
     """Return path to an event-window pickled dataset file."""
     return get_pickled_dir(dataset) / "event_window" / f"{group}_data_task{task}.pkl"
+
+
+def get_paper_dir(area: str) -> Path:
+    """Output dir for generated paper figures/tables (see paper/{area}/ for
+    the scripts that write here). Not dataset-namespaced — a paper figure
+    may combine results across datasets/tasks."""
+    return STORAGE_DIR / "paper" / area
