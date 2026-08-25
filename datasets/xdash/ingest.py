@@ -21,16 +21,29 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # CSV column layout
 # ---------------------------------------------------------------------------
+# dataset.yaml's `channels:` list (semantic names, e.g. "head_pos_x") is the
+# single source of truth for column order. This map gives each semantic name
+# its raw PlayerMovement.csv header — the only place that raw naming quirk
+# needs to be known. Anything reading the pickled arrays downstream (models,
+# plots, feature tables) only ever sees the semantic names from dataset.yaml.
+RAW_NAME_MAP = {
+    "head_pos_x": "HPosX", "head_pos_y": "HPosY", "head_pos_z": "HPosZ",
+    "head_rot_x": "HRotX", "head_rot_y": "HRotY", "head_rot_z": "HRotZ",
+    "left_hand_pos_x": "LPosX", "left_hand_pos_y": "LPosY", "left_hand_pos_z": "LPosZ",
+    "left_hand_rot_x": "LRotX", "left_hand_rot_y": "LRotY", "left_hand_rot_z": "LRotZ",
+    "right_hand_pos_x": "RPosX", "right_hand_pos_y": "RPosY", "right_hand_pos_z": "RPosZ",
+    "right_hand_rot_x": "RRotX", "right_hand_rot_y": "RRotY", "right_hand_rot_z": "RRotZ",
+}
 
-MOVEMENT_COLS = [
-    "TimeElapsed",
-    "HPosX", "HPosY", "HPosZ", "HRotX", "HRotY", "HRotZ",
-    "LPosX", "LPosY", "LPosZ", "LRotX", "LRotY", "LRotZ",
-    "RPosX", "RPosY", "RPosZ", "RRotX", "RRotY", "RRotZ",
-]
 
-# Rotation column indices in the 19-col array (col 0 = TimeElapsed)
-ROT_COLS = [4, 5, 6, 10, 11, 12, 16, 17, 18]
+def build_movement_cols(config: dict) -> list:
+    """Raw PlayerMovement.csv column order: [timestamp_column] + channels, mapped to raw names."""
+    return [config["timestamp_column"]] + [RAW_NAME_MAP[c] for c in config["channels"]]
+
+
+def build_rot_col_indices(config: dict) -> list:
+    """Indices (into the array built from build_movement_cols) of rotation channels."""
+    return [i + 1 for i, c in enumerate(config["channels"]) if "rot" in c]
 
 
 # ---------------------------------------------------------------------------
@@ -94,22 +107,24 @@ def parse_master(master_path: Path, task_labels: dict) -> dict:
 # PlayerMovement.csv slicing
 # ---------------------------------------------------------------------------
 
-def load_movement_slice(movement_path: Path, start_time: float, end_time: float):
-    """Return (T, 19) float32 array, or None on failure."""
+def load_movement_slice(movement_path: Path, start_time: float, end_time: float,
+                         movement_cols: list):
+    """Return (T, len(movement_cols)) float32 array, or None on failure."""
     if not movement_path.exists():
         return None
 
     df = pd.read_csv(movement_path)
     df.columns = [c.strip() for c in df.columns]
 
-    missing = [c for c in MOVEMENT_COLS if c not in df.columns]
+    missing = [c for c in movement_cols if c not in df.columns]
     if missing:
         print(f"      Warning: missing columns {missing} in {movement_path.name}")
         return None
 
-    df = df[MOVEMENT_COLS]
-    df["TimeElapsed"] = pd.to_numeric(df["TimeElapsed"], errors="coerce")
-    df = df.dropna(subset=["TimeElapsed"])
+    timestamp_col = movement_cols[0]
+    df = df[movement_cols]
+    df[timestamp_col] = pd.to_numeric(df[timestamp_col], errors="coerce")
+    df = df.dropna(subset=[timestamp_col])
 
     if end_time == float("inf"):
         mask = df["TimeElapsed"] >= start_time
@@ -124,9 +139,9 @@ def load_movement_slice(movement_path: Path, start_time: float, end_time: float)
 # Rotation fix: unwrap + shift frames near 360° to near 0°
 # ---------------------------------------------------------------------------
 
-def fix_rotation_cols(arr: np.ndarray) -> np.ndarray:
+def fix_rotation_cols(arr: np.ndarray, rot_cols: list) -> np.ndarray:
     arr = arr.copy()
-    for col in ROT_COLS:
+    for col in rot_cols:
         arr[:, col] = np.rad2deg(np.unwrap(np.deg2rad(arr[:, col])))
         if arr[0, col] > 180:
             arr[:, col] -= 360
@@ -137,7 +152,8 @@ def fix_rotation_cols(arr: np.ndarray) -> np.ndarray:
 # Per-subject processing
 # ---------------------------------------------------------------------------
 
-def process_subject(subject_dir: Path, task_num: int, task_labels: dict, sampling_rate: int):
+def process_subject(subject_dir: Path, task_num: int, task_labels: dict, sampling_rate: int,
+                     movement_cols: list, rot_cols: list):
     subject_id = subject_dir.name
     master_path = subject_dir / "Master.csv"
     movement_path = subject_dir / "PlayerMovement.csv"
@@ -158,13 +174,13 @@ def process_subject(subject_dir: Path, task_num: int, task_labels: dict, samplin
         return subject_id, None
 
     start_time, end_time = bounds
-    arr = load_movement_slice(movement_path, start_time, end_time)
+    arr = load_movement_slice(movement_path, start_time, end_time, movement_cols)
 
     if arr is None:
         print(f"    [{subject_id}] Warning: no frames in window [{start_time:.2f}s, {end_time:.2f}s)")
         return subject_id, None
 
-    arr = fix_rotation_cols(arr)
+    arr = fix_rotation_cols(arr, rot_cols)
     duration = end_time - start_time
     n_frames = len(arr)
 
@@ -197,6 +213,8 @@ def ingest(config: dict, raw_dir: Path, out_dir: Path,
         If True, print summary without writing files.
     """
     sampling_rate = config.get("sampling_rate", 50)
+    movement_cols = build_movement_cols(config)
+    rot_cols = build_rot_col_indices(config)
     # Build task label map: {1: "Task 1", ...} using the task name as the CSV marker
     # XDash Master.csv uses "Task 1", "Task 2", etc. as markers
     task_ids = sorted(config["tasks"].keys())
@@ -232,13 +250,15 @@ def ingest(config: dict, raw_dir: Path, out_dir: Path,
 
         print("\n  Patients:")
         for d in patient_dirs:
-            sid, arr = process_subject(d, task_num, task_labels, sampling_rate)
+            sid, arr = process_subject(d, task_num, task_labels, sampling_rate,
+                                        movement_cols, rot_cols)
             if arr is not None:
                 patient_data[sid] = arr
 
         print("\n  Controls:")
         for d in control_dirs:
-            sid, arr = process_subject(d, task_num, task_labels, sampling_rate)
+            sid, arr = process_subject(d, task_num, task_labels, sampling_rate,
+                                        movement_cols, rot_cols)
             if arr is not None:
                 control_data[sid] = arr
 

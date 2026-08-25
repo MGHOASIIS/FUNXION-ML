@@ -1,6 +1,8 @@
 name: xdash
 sampling_rate: 50
 
+timestamp_column: TimeElapsed
+
 channels:
   - head_pos_x
   - head_pos_y
