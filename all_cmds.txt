@@ -1,0 +1,115 @@
+XDash repo — all runnable commands
+===================================
+
+main.py
+-------
+python main.py --task 1 --paradigm 1 --model rnn --method truncate
+python main.py --dataset raw_data2 --task 1 --paradigm 1 --model rnn --method truncate
+python main.py --dataset xdash --ingest
+python main.py --dataset raw_data2 --ingest --tasks 1 2
+python main.py --task 1 --paradigm 1 --model rnn --method sliding_window --window-size 300 --overlap 0.3 --diagnostics --save-figures
+
+scripts/hmm/
+------------
+
+ablation_comparison.py
+python ablation_comparison.py --exp-dir /home/singh.vishwa/xdash2/experiments
+python ablation_comparison.py --exp-dir experiments --task 4 --paradigm 2
+python ablation_comparison.py --exp-dir experiments --metric auc
+
+generate_all_state_seqs.py
+python scripts/generate_all_state_seqs.py
+python scripts/generate_all_state_seqs.py --tasks 1 2
+python scripts/generate_all_state_seqs.py --paradigms 1
+python scripts/generate_all_state_seqs.py --hmm-dir storage/results/xdash/experiments/
+python scripts/generate_all_state_seqs.py --csv-dir storage/raw/xdash/events/
+
+generate_hmm_analysis_table.py
+python scripts/generate_hmm_analysis_table.py --task 1 --paradigm 1
+python scripts/generate_hmm_analysis_table.py --all
+
+make_permutation_vs_emission_figures.py   (hardcoded, no CLI flags — edit values in file to reuse)
+python scripts/hmm/make_permutation_vs_emission_figures.py
+
+posthoc_laterality_analysis.py   (module docstring calls it hmm_laterality_analysis.py)
+python hmm_laterality_analysis.py
+python hmm_laterality_analysis.py --dataset xdash --px-details data/xdash_px_details.xlsx
+python hmm_laterality_analysis.py --paradigm 1
+python hmm_laterality_analysis.py --task 1 2 3
+
+run_hsmm_staged.py
+python scripts/hmm/run_hsmm_staged.py --stage grid --task 4 --paradigm 2 --partial-dir storage/results/xdash/hsmm_staged/T4_P2
+python scripts/hmm/run_hsmm_staged.py --stage channel --task 4 --paradigm 2 --channel-idx 0 --partial-dir storage/results/xdash/hsmm_staged/T4_P2
+python scripts/hmm/run_hsmm_staged.py --stage merge --task 4 --paradigm 2 --partial-dir storage/results/xdash/hsmm_staged/T4_P2
+
+save_emission_importance.py
+python scripts/hmm/save_emission_importance.py --task 1 --paradigm 2
+python scripts/hmm/save_emission_importance.py --model hsmm --task 4 --paradigm 2
+python scripts/hmm/save_emission_importance.py --all
+
+save_hsmm_duration_analysis.py
+python scripts/hmm/save_hsmm_duration_analysis.py --task 1 --paradigm 2
+python scripts/hmm/save_hsmm_duration_analysis.py --all
+
+scripts/data_prep/
+------------------
+
+add_survey_columns.py
+python add_survey_columns.py --xlsx data/xdash_px_details.xlsx --data data/xdash_data --out data/xdash_px_details_updated.xlsx
+
+extract_subject_features.py
+python extract_subject_features.py --data-dir storage/pickled/xdash --px-details storage/raw/xdash/xdash_px_details.xlsx --features-dir features/ --out-dir storage/results/xdash/hmm/subject_features/
+
+scripts/nn/
+-----------
+
+extract_results.py   (no argparse — hardcoded BASE_DIR)
+python scripts/nn/extract_results.py
+
+generate_figures.py
+python generate_figures.py [--csv all_models_diagnostics_summary.csv] [--out figures/]
+python generate_figures.py --demo
+
+parse_experiments.py   (no argparse — hardcoded paths)
+python scripts/nn/parse_experiments.py
+
+scripts/results/
+----------------
+
+extract_hpc_results.py
+python scripts/extract_hpc_results.py
+python scripts/extract_hpc_results.py --exp-dir /path/to/experiments_from_hpc
+python scripts/extract_hpc_results.py --out-dir results/
+
+extract_predictions.py
+python extract_predictions.py --exp-dir /home/singh.vishwa/xdash2/experiments
+python extract_predictions.py --exp-dir experiments --name-filter ABL_EW
+python extract_predictions.py --exp-dir experiments --task 4 --paradigm 2
+
+inference/
+----------
+
+inference.py
+python inference.py --checkpoint experiments/task1/paradigm1/CNN_T1_P1_.../model_checkpoints/best_model_BA0.85.pt --task 1 --paradigm 1 --model cnn --method truncate --test-data path/to/new_subjects.pkl
+python inference.py --checkpoint ... --task 1 --paradigm 1 --model rnn --method truncate --test-csv-dir path/to/csv_dir/
+python inference.py --checkpoint ... --task 1 --paradigm 1 --model cnn --method truncate --test-csv path/to/subject.csv
+
+prepare_test_data.py
+python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW
+python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW --tasks 1 3
+python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW --dry-run
+python prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW --output-dir my_output/
+
+run_all_inference.py
+python run_all_inference.py --test-subject-dir storage/raw/xdash/test_data/PX41 --subject-id PX_41
+python run_all_inference.py --test-subject-dir storage/raw/xdash/test_data/PX41 --subject-id PX_41 --tasks 1 2 --paradigms 1 2
+python run_all_inference.py --test-subject-dir storage/raw/xdash/test_data/PX41 --subject-id PX_41 --experiments-dir results/experiments_from_hpc --output results/PX41_all_results.csv
+
+datasets/xdash/ingest.py
+------------------------
+python -m datasets.xdash.ingest --raw-dir storage/raw/xdash --output-dir storage/pickled/xdash
+
+Notes
+-----
+- Excluded: Archived/ (superseded scripts) and library modules with __main__ self-test blocks but no argparse (models/*.py, utils/*.py, features/*.py, pipeline/*.py).
+- scripts/nn/ and scripts/results/ operate on the older experiments_from_hpc/ CNN/RNN/Transformer results tree, separate from the current HMM/HSMM pipeline used elsewhere in this repo.

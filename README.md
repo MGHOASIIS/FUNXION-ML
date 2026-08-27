@@ -1,324 +1,189 @@
-# XDash: ML Classification of Shoulder Pathology Using XR-Based Motion Capture
+# FUNXION-ML: A Scalable ML Pipeline for Motion-Capture Classification
 
-> **Machine Learning Classification of Shoulder Pathology Using Extended Reality (XR) Motion Tracking and Deep Learning**
+> A dataset-agnostic, model-agnostic pipeline for classifying pathology from
+> motion-tracking time series, built to grow to new datasets and new model
+> architectures without touching the core pipeline code.
 
-## 🎯 Project Overview
+## Project overview
 
-This research project develops state-of-the-art AI models to classify shoulder pathology using Extended Reality (XR) motion-tracking data. We capture 6-degree-of-freedom (6-DoF) kinematic data from XR headsets and hand controllers during standardized functional assessment tasks, then apply deep learning to automate injury classification and identify discriminative movement patterns.
+This is a research ML pipeline for classifying movement-based pathology from
+time-series sensor data (currently XR/motion-capture kinematics). The
+architecture is split so that **adding a new dataset or a new model is a
+matter of writing one small adapter, not modifying `dataio/` or
+`pipeline/`**:
 
-**Clinical Impact**: Bridging the gap between subjective manual assessments and objective, interpretable AI tools for orthopedic rehabilitation.
+- **Datasets** are plugged in under `datasets/{name}/` — each one just
+  declares its channels, tasks, and classification paradigms in a
+  `dataset.yaml` and provides an `ingest()` function. `dataio/` and
+  `pipeline/` consume any dataset identically through that config.
+- **Models** are plugged in under `models/` by subclassing
+  `models/base_model.py:BaseModel` and registering the class in
+  `pipeline/runner.py:create_model()`. Every model gets the same CLI surface,
+  the same preprocessing options, the same LOO-CV evaluation and diagnostics
+  for free.
 
-## 📊 Research Phases
+Today the pipeline ships with one dataset (**XDash**) and five models
+(**HMM, HSMM, 1D-CNN, RNN, Transformer**) — see below for both, and see
+[`DATA_SETUP.md`](DATA_SETUP.md) for the exact steps to add another dataset.
 
-### ✅ Phase 1: Baseline ML on Whole Time-Series (COMPLETED)
-- **Models**: HMM, 1D-CNN, RNN (GRU/LSTM, bidirectional), Transformer
-- **Evaluation**: Leave-One-Out Cross-Validation (LOO CV) with balanced accuracy, recall, AUC
-- **Data**: N=60, 18 features per timepoint, 6 functional tasks, 4 classification paradigms
+### Current dataset: XDash (N=60)
 
-### 🔄 Phase 2: Enhanced ML with Validation (IN PROGRESS)  
-- **Data Augmentation**: 
-- **Validation Study**: Map DL sensor importance → XGBoost+SHAP traditional features
-- **Downsampling**: 50Hz → 20-25Hz to reduce computational burden
-- **Windowing**: Adaptive according to events or HMM states
-- **Infrastructure**: Comprehensive diagnostic monitoring and overfitting detection
+Subjects perform six standardized functional tasks while wearing an XR
+headset with two hand controllers, producing 6-DoF kinematic data (18
+channels: head + left hand + right hand, each with position + rotation, at
+50Hz).
 
-### 🚀 Phase 3: Self-Supervised Transformers (PLANNED)
-- **Approach**: Event-based windowing (~3,600 samples) + self-supervised pretraining
-- **Models**: Contrastive learning (SimCLR/MoCo) → Transformer fine-tuning
-- **Goal**: Overcome N=60 limitation through representation learning
+- **Population**: 40 patients (RCT, arthritis, bursitis, tendonitis) + 20 controls.
+- **Tasks**: 1 jar opening, 2 key turning, 3 cleaning, 4 back washing, 5 cutting, 6 hammering.
+- **Classification paradigms**: 1 patients vs. controls, 2 RCT vs. controls,
+  3 other conditions vs. controls, 4 RCT vs. other conditions.
 
-## 🏗️ Project Structure
+See `datasets/xdash/dataset.yaml` for the exact channel list, task/paradigm
+definitions, and subject-filtering rules — and `datasets/xdash/` generally
+as the reference example to copy when adding a new dataset.
+
+## Project structure
 
 ```
-X-DASH-Data-Analysis/
-├── 📁 config/                    # Configuration files
-│   ├── constants.py              # Project constants (tasks, paradigms, features)
-│   ├── hyperparameter.py         # Model hyperparameter grids
-│   └── paths.py                  # File paths and directory structure
-|── 📁 data/                      # Data files
-├── ├──📁 events/                 # events files
-├── ├──📁 pickled_datasets/       # Pickled dataset files                
-|   |── paradigms.py              # paradigm selector 
-|   |── preprocessors.py          # preprocessor selector
-|   |── transforms.py             # transforms filter
-|   |── xdash_px_details.xlsx     # all details info
-├── 📁 models/                    # Model implementations
-│   ├── base_model.py             # Abstract base class with reproducibility
-│   ├── hmm_model.py              # Hidden Markov Model
-│   ├── cnn_model.py              # 1D Convolutional Neural Network
-│   └── rnn_model.py              # Recurrent Neural Network (GRU/LSTM)
-│   └── transformer_model.py      # Transformer
-├── 📁 scripts/                   # Scripts
-│   ├── add_survey_columns.py     # Script to add 11 individual question columns (q1_jar … q11_sleep) plus DASH_survey formula to Sheet1 of xdash_px_details.xlsx.
-│   ├── extract_results.py        # Scrapes experiment results all models across all tasks (1-6) and paradigms (1-4).
-│   ├── generate_all_state_seqs.py# Generate all state sequences figures for hmm models across all task and paradigms for each user
-│   └── generate_figures.py       # Generate comparison graphs between nn-models
-│   └── generate_hmm_analysis_table.py # Generates a 4-sheet Excel analysis table for one HMM task×paradigm result.
-│   ├── generate_pickled_datasets.py   # Creates per-task pickled datasets from raw PlayerMovement.csv files,
-│   ├── parse_experiments.py      # Generates nn-models-results/xdash_results.xlsx"
-│   ├── sensor_alignment.py       # Compares sensor/feature importance rankings between old_csv and new_csv
-├── 📁 training/                  # Training infrastructure
-│   ├── cross_validator.py        # LOO cross-validation
-│   └── evaluator.py              # Model evaluation and metrics
-├── 📁 utils/                     # Utilities and diagnostics
-│   ├── comprehensive_monitor.py  # Complete model diagnostics
-│   ├── model_diagnostics.py      # Gradient/activation analysis
-│   ├── overfitting_detection.py  # Overfitting analysis for N=60
-│   ├── importance.py             # Feature importance analysis
-│   ├── visualization.py          # Plotting and visualization
-│   ├── metrics.py                # Evaluation metrics
-├── 📁 preprocessing/              # Data preprocessing
-│   ├── loaders.py                # Data loading utilities
-│   ├── preprocessors.py          # Preprocessing pipelines
-│   ├── transforms.py             # Data transformations
-│   └── paradigms.py              # Classification paradigm setup
-├── 📁 experiments/               # Experiment outputs
-├── 📁 logs/                      # Training and diagnostic logs
-├── main.py                       # Main experiment runner
-└── environment.yml               # Conda environment
-└── run_single.sh                 # SLURM job script for a single XDash experiment.
-└── setup_env.sh                  # Run this ONCE on the login node before submitting any jobs.
-└── submit_all.sh                 # Submits all 96 experiments (6 tasks × 4 paradigms × 4 models) as independent SLURM jobs
+FUNXION-ML/
+├── config/            # constants.py, hyperparameter.py (per-model param grids), paths.py
+├── dataio/            # dataset-agnostic ingestion/paradigm/preprocessing/transform logic
+├── datasets/          # one adapter folder per dataset (dataset.yaml + ingest.py), e.g. datasets/xdash/
+├── models/            # base_model.py + hmm/hsmm/cnn/rnn/transformer implementations
+├── features/          # handcrafted feature extractors (biomechanical, spectral, entropy, ...)
+├── pipeline/          # runner.py wires dataio -> model -> training/evaluation for one experiment
+├── inference/         # run a trained checkpoint on new/held-out subjects
+├── utils/             # metrics, diagnostics (overfitting/gradient/activation), importance, plotting
+├── scripts/           # one-off analysis scripts, grouped by area (data_prep/, hmm/, nn/, results/)
+├── paper/             # scripts that reproduce one specific figure/table for a paper (see paper/README.md)
+├── hpc/               # SLURM setup/submission scripts
+├── storage/           # gitignored: raw/pickled/results data (see DATA_SETUP.md)
+├── main.py            # CLI entry point for ingestion + experiments
+└── requirements.txt
 ```
 
-## 📈 Dataset & Tasks
+`scripts/nn/`, `scripts/results/`, and `paper/nn_jmir_xr/` target an older
+`experiments_from_hpc/` CNN/RNN/Transformer results tree from an earlier
+project phase, separate from the current HMM/HSMM-centric `storage/results/`
+layout used everywhere else — kept for reference, not part of the active
+pipeline. Likewise `features/extract_features.py` and
+`features/feature_config.py` are unused legacy files kept for reference; the
+feature extractors actually in use are wired in through
+`scripts/data_prep/extract_subject_features.py`.
 
-### XDash Dataset (N=60)
-- **Population**: 40 patients (RCT, arthritis, bursitis, tendonitis) + 20 controls
-- **Sensors**: XR headset + 2 controllers (18 features: 3×6-DoF @ 50Hz)
-- **Tasks**: 6 standardized functional assessments
-  1. 🫙 **Jar Opening** 
-  2. 🔑 **Key Turning** 
-  3. 🧽 **Cleaning** 
-  4. 🚿 **Back Washing**
-  5. ✂️ **Cutting**
-  6. 🔨 **Hammering**
+See `all_cmds.txt` for a full list of runnable commands across the repo.
 
-### Classification Paradigms
-1. **Patients vs Controls** - Primary diagnostic classification
-2. **RCT vs Controls** - Rotator cuff tear specific
-3. **Other Conditions vs Controls** - Non-RCT pathologies  
-4. **RCT vs Other Conditions** - Differential diagnosis
-
-## 🚀 Getting Started
+## Getting started
 
 ### Prerequisites
-- Python 3.8+
-- CUDA-capable GPU (recommended)
-- conda/mamba package manager
+
+- Python 3.10+
+- CUDA-capable GPU (recommended for CNN/RNN/Transformer training)
 
 ### Installation
 
 ```bash
-# Clone repository
-git clone https://github.com/username/X-DASH-Data-Analysis.git
-cd X-DASH-Data-Analysis
-
-# Create conda environment
-conda env create -f environment.yml
-conda activate xdash
-
-# Verify installation
+git clone https://github.com/MGHOASIIS/FUNXION-ML.git
+cd FUNXION-ML
+pip install -r requirements.txt
 python main.py --help
 ```
 
-### Quick Start
+Get access to the raw data and place it under `storage/` — see
+[`DATA_SETUP.md`](DATA_SETUP.md).
+
+### Usage
 
 ```bash
-# Run single experiment
+# Generate pickled datasets from raw data (dataset defaults to xdash)
+python main.py --dataset xdash --ingest
+python main.py --dataset xdash --ingest --ingest-tasks 1 2
+
+# Run a single experiment
 python main.py --task 1 --paradigm 1 --model rnn --method truncate
 
-# Run with comprehensive diagnostics
-python main.py --task 1 --paradigm 1 --model rnn --diagnostics
-
-# Hyperparameter search with early stopping
-python main.py --task 2 --paradigm 2 --model cnn --patience 15 --min-delta 1e-4
+# Sliding-window preprocessing with diagnostics and saved figures
+python main.py --task 1 --paradigm 1 --model rnn --method sliding_window \
+    --window-size 300 --overlap 0.3 --diagnostics --save-figures
 
 # Save model checkpoints
-python main.py --task 1 --paradigm 1 --model rnn --save-checkpoints
+python main.py --task 1 --paradigm 1 --model cnn --method truncate --save-checkpoints
 ```
 
-### HPC Usage (SLURM)
+Key flags (see `python main.py --help` for the full set):
+
+| Flag | Purpose |
+|---|---|
+| `--dataset` | Dataset name, must match a folder under `datasets/` (default: `xdash`) |
+| `-t/--task`, `-p/--paradigm` | Which task/paradigm to run, per `dataset.yaml` |
+| `-m/--model` | `hmm`, `hsmm`, `cnn`, `rnn`, or `transformer` |
+| `-pre/--method` | Preprocessing: `truncate`, `sliding_window`, `padding`, `dtw_embedding`, `downsample_truncate`, `variable_length`, `phase_shift` |
+| `--diagnostics` | Run the comprehensive diagnostic suite (overfitting, gradients, activations, feature importance) |
+| `--augment` | Enable data augmentation (`jitter`, `time_warp`, `magnitude_warp`, ...) |
+| `--save-checkpoints` | Persist model checkpoints under `storage/results/{dataset}/experiments/` |
+
+### HPC usage (SLURM)
 
 ```bash
-# Setup environment on HPC
-bash setup_env.sh
-
-# Submit single job
-sbatch run_single.sh 1 1 rnn
-
-# Submit all experiments (96 total)
-bash submit_all.sh
-
-# Monitor jobs
-squeue -u username
+bash hpc/setup_env.sh          # once, on the login node
+bash hpc/submit_all.sh         # submit all task x paradigm x model combinations
+bash hpc/submit_ablations.sh   # submit ablation runs
+squeue -u <username>
 ```
 
-## 🔬 Key Features
+### Inference on new subjects
 
-### 🎯 Model Architectures
-- **HMM**: Generative probabilistic model with Gaussian emissions
-- **1D-CNN**: Deep convolutional architecture with GRU head
-- **RNN**: GRU/LSTM with bidirectional support and multiple pooling strategies
-- **Transformer**
-
-### 📊 Comprehensive Diagnostics
-- **Overfitting Detection**: Critical for N=60 - generalization gap analysis, bias-variance decomposition
-- **Gradient Analysis**: Vanishing/exploding gradient detection
-- **Activation Analysis**: Dead neuron detection, activation diversity
-- **Feature Importance**: Permutation importance + weight-based analysis
-- **Clinical Interpretation**: Maps sensor importance to biomechanical understanding
-
-### 🔧 Research Infrastructure
-- **Reproducible**: All random seeds controlled for exact reproducibility
-- **Modular**: Clean separation of preprocessing, models, training, evaluation
-- **Extensible**: Easy to add new models, tasks, or datasets
-- **Validated**: Comprehensive testing and error handling
-
-## 🔧 Configuration
-
-### Model Hyperparameters
-```python
-# HMM Configuration
-HMM_PARAM_GRID = {
-        "covariance_type": ["diag", "full"],
-        "n_components":    [2, 3, 4, 5, 6, 7, 8],
-        "n_iter":          [100],
-    }
-
-    CNN_PARAM_GRID = {
-        # CNN trunk
-        "conv_channels": [
-            [32, 64, 64],
-            [64, 128, 128],
-            [64, 128, 256],
-        ],
-        "kernel_sizes": [
-            [7, 5, 3],
-            [5, 5, 5],
-        ],
-        # Regularisation & optimiser
-        "dropout_fc":    [0.2, 0.4],
-        "learning_rate": [1e-3, 2e-4],
-        "weight_decay":  [5e-4],
-        # Training loop
-        "batch_size":    [32, 64],
-        "epochs":        [100],
-    }
-
-    RNN_PARAM_GRID = {
-        # architecture
-        "rnn_type":      ["lstm", "gru"],
-        "hidden_size":   [32, 64, 128],
-        "num_layers":    [1, 2],
-        # regularisation
-        "bidirectional": [True, False],
-        "dropout_rnn":   [0.2],
-        "dropout_fc":    [0.3],
-        # optimisation
-        "lr":            [1e-3],
-        "epochs":        [100],
-        "batch_size":    [32, 64],
-        # pooling
-        "pooling":       ["max", "mean", "last"],
-    }
-
-
-    TRANSFORMER_PARAM_GRID = {
-        "d_model":         [32],
-        "nhead":           [2, 4],       # nhead must divide d_model
-        "num_layers":      [1, 2],
-        "dim_feedforward": [64],
-        "dropout":         [0.1],
-        "dropout_fc":      [0.2],
-        "lr":              [1e-3, 2e-4],
-        "weight_decay":    [1e-4],
-        "batch_size":      [32],
-        "epochs":          [50],
-    }
-```
-
-### Reproducibility
-```python
-# All models inherit automatic reproducibility
-model = RNNModel(seed=42, task=1, paradigm=1)
-# Sets torch, numpy, random, CUDA seeds automatically
-```
-
-## 📖 Usage Examples
-
-### Basic Training
-```python
-from models.rnn_model import RNNModel
-from preprocessing.loaders import load_xdash_data
-from preprocessing.paradigms import ParadigmSelector
-
-# Load and preprocess data
-g1, g0 = load_xdash_data(task=1)
-paradigm_selector = ParadigmSelector()
-X, y, subject_ids = paradigm_selector.prepare_data(g1, g0, paradigm=1)
-
-# Train model with reproducibility
-model = RNNModel(seed=42, patience=15)
-results = model.train_and_evaluate(X, y, subject_ids)
-
-print(f"Balanced Accuracy: {results.metrics['ba']:.3f}")
-print(f"Best Architecture: {results.best_params}")
-```
-
-### Comprehensive Diagnostics
-```python
-from utils.comprehensive_monitor import run_complete_monitoring
-
-# Run full diagnostic suite
-diagnostic_results = run_complete_monitoring(
-    model=model,
-    X=X, y=y, subject_ids=subject_ids,
-    fold_results=results.per_fold_results,
-    experiment_name="RNN_Task1_Paradigm1",
-    save_dir=Path("diagnostics"),
-    feature_names=CHAN_NAME
-)
-
-# Includes: overfitting analysis, gradient/activation analysis, 
-# feature importance, clinical interpretation, bias-variance decomposition
-```
-
-### Development Setup
 ```bash
-# Install development dependencies
-pip install -e ".[dev]"
+python inference/prepare_test_data.py --data-dir storage/raw/xdash/test_data/ --subject-id PX_NEW
+python inference/run_all_inference.py --test-subject-dir storage/raw/xdash/test_data/PX_NEW --subject-id PX_NEW
+```
 
-# Run tests
+### Tests
+
+```bash
 pytest tests/
-
-# Code formatting
-black . && isort .
-
-# Type checking
-mypy models/ utils/
 ```
 
-## 📧 Contact & Collaboration
+## Models
 
-**Research Team**: 
-**Primary Contact**: [Your Name] - [email@institution.edu]
-**Clinical Collaborator**: [Clinical Lead]
-**Technical Lead**: [Your Name]
+Every model implements the same `models/base_model.py:BaseModel` interface
+(`train_and_evaluate`, `compute_feature_importance`), which is what lets
+`pipeline/runner.py` run LOO-CV, diagnostics, checkpointing, and feature
+importance identically regardless of which model is selected.
 
----
+Currently supported (`-m/--model`):
 
-## 📄 License
+- **HMM / HSMM**: Generative probabilistic models with Gaussian emissions
+  (HSMM adds explicit state-duration modeling); see `models/hmm_model.py`,
+  `models/hsmm_model.py`, `models/state_sequence_analysis.py`.
+- **1D-CNN**: Convolutional trunk with GRU head (`models/cnn_model.py`).
+- **RNN**: GRU/LSTM, optionally bidirectional, multiple pooling strategies (`models/rnn_model.py`).
+- **Transformer**: `models/transformer_model.py`.
 
+Hyperparameter grids per model live in `config/hyperparameter.py`.
 
+### Adding a new model
 
-## 🙏 Acknowledgments
+1. Subclass `BaseModel` in a new `models/{name}_model.py`, implementing
+   `train_and_evaluate()` and `compute_feature_importance()`.
+2. Register it in `pipeline/runner.py:create_model()`.
+3. Add the name to the `-m/--model` choices list in `main.py`.
 
-- Massachusetts General Brigham Orthopedic Surgery Department
-- Clinical research participants who made this work possible
-- HPC resources provided by [Institution]
-- Funding support from [Grant Numbers]
+No other file needs to change — the CLI, preprocessing, evaluation, and
+diagnostics all operate on the `BaseModel` interface, not on any specific
+model.
 
----
+## Diagnostics
 
-*This project aims to transform orthopedic assessment through interpretable AI and immersive technology, bridging the gap between research innovation and clinical impact.*
+`--diagnostics` runs `utils/comprehensive_monitor.py`, which covers:
+
+- Overfitting analysis (`utils/overfitting_detection.py`) — important given N=60.
+- Gradient/activation analysis (`utils/model_diagnostics.py`).
+- Feature importance (`utils/importance.py`).
+- Plotting (`utils/visualization.py`).
+
+## Further reading
+
+- [`DATA_SETUP.md`](DATA_SETUP.md) — where data lives, how to add a new dataset.
+- [`paper/README.md`](paper/README.md) — conventions for paper-specific figure/table scripts.
+- `all_cmds.txt` — every runnable command in the repo, by subdirectory.
