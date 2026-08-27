@@ -48,14 +48,14 @@ import json
 import numpy as np
 from pathlib import Path
 from sklearn.model_selection import ParameterGrid
-from sklearn.metrics import balanced_accuracy_score
+from sklearn.metrics import balanced_accuracy_score, f1_score
 from hmmlearn.hmm import GaussianHMM
 from joblib import parallel_backend, Parallel, delayed
 from scipy.special import logsumexp
 
 from models.base_model import BaseModel, ModelResults
 from models.state_sequence_analysis import StateSequenceAnalysisMixin
-from utils.metrics import compute_metrics
+from utils.metrics import compute_metrics, compute_multilabel_metrics
 from utils.training import build_loo_splits, resolve_fold_masks, build_fold_record, print_best
 
 
@@ -396,7 +396,8 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
     shared with HMMModel.
     """
 
-    def __init__(self, checkpoints_dir=None, task=None, paradigm=None, channel_names=None):
+    def __init__(self, checkpoints_dir=None, task=None, paradigm=None, channel_names=None,
+                 multilabel=False, label_names=None):
         super().__init__(
             model_name="HSMM",
             checkpoints_dir=checkpoints_dir,
@@ -405,10 +406,15 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
             task=task,
             paradigm=paradigm,
             channel_names=channel_names,
+            multilabel=multilabel,
+            label_names=label_names,
         )
 
-        self.fitted_hsmm0: Optional[GaussianHSMM] = None   # control model
-        self.fitted_hsmm1: Optional[GaussianHSMM] = None   # patient model
+        self.fitted_hsmm0: Optional[GaussianHSMM] = None   # control model (binary only)
+        self.fitted_hsmm1: Optional[GaussianHSMM] = None   # patient model (binary only)
+
+        # Stored after fit_for_analysis_multilabel() — one-vs-rest pair per label
+        self.fitted_hsmms: Dict[str, Tuple[GaussianHSMM, GaussianHSMM]] = {}
 
     def _get_fitted(self, cls_idx: int):
         return self.fitted_hsmm0 if cls_idx == 0 else self.fitted_hsmm1
@@ -464,8 +470,9 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
         # HSMM_PARAM_GRID is a single fixed combo (see config/hyperparameter.py),
         # so there's nothing to parallelize across here — the real cost lives
         # in compute_feature_importance(), which is parallelized separately.
+        score_fn = self._loo_score_multilabel if self.multilabel else self._loo_score
         results = [
-            self._loo_score(params, X, y, cv_splits, subject_ids, unique_subjects)
+            score_fn(params, X, y, cv_splits, subject_ids, unique_subjects)
             for params in grid
         ]
 
@@ -476,8 +483,9 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
         print_best("HSMM", best_params, best_score)
 
         # Sanity check: every prediction's subject ID must agree with its own
-        # y_true label (g1_ tag -> label 1, g0_ tag -> label 0).
-        if subject_ids is not None:
+        # y_true label (g1_ tag -> label 1, g0_ tag -> label 0). Binary-only —
+        # multilabel subject_ids have no g1_/g0_ prefix.
+        if not self.multilabel and subject_ids is not None:
             assert len(subject_order) == len(y_true), (
                 f"subject_order length {len(subject_order)} != y_true length {len(y_true)}"
             )
@@ -489,15 +497,27 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
                 )
 
         # Fit on full data for Phase-2 analysis
-        print(f"\n[HSMM] Fitting on full data with best params for analysis ...")
-        self.fit_for_analysis(
-            X               = X,
-            y               = y,
-            n_components    = best_params["n_components"],
-            covariance_type = best_params["covariance_type"],
-            n_iter          = best_params["n_iter"],
-            max_duration    = best_params.get("max_duration", 200)
-        )
+        if self.multilabel:
+            print(f"\n[HSMM] Fitting on full data with best params for analysis (multilabel) ...")
+            self.fit_for_analysis_multilabel(
+                X               = X,
+                y               = y,
+                label_names     = self.label_names,
+                n_components    = best_params["n_components"],
+                covariance_type = best_params["covariance_type"],
+                n_iter          = best_params["n_iter"],
+                max_duration    = best_params.get("max_duration", 200)
+            )
+        else:
+            print(f"\n[HSMM] Fitting on full data with best params for analysis ...")
+            self.fit_for_analysis(
+                X               = X,
+                y               = y,
+                n_components    = best_params["n_components"],
+                covariance_type = best_params["covariance_type"],
+                n_iter          = best_params["n_iter"],
+                max_duration    = best_params.get("max_duration", 200)
+            )
 
         feature_imp = self.compute_feature_importance(
             X=X,
@@ -508,7 +528,12 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
             unique_subjects=unique_subjects
         )
 
-        metrics = compute_metrics(y_true, y_pred, y_proba)
+        if self.multilabel:
+            metrics = compute_multilabel_metrics(y_true, y_pred, y_proba, self.label_names)
+            checkpoint_metrics = {'macro_f1': best_score, **metrics}
+        else:
+            metrics = compute_metrics(y_true, y_pred, y_proba)
+            checkpoint_metrics = {'balanced_accuracy': best_score, **metrics}
 
         # Save checkpoint
         from datetime import datetime
@@ -540,7 +565,7 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
                 'task':             self.task,
                 'paradigm':         self.paradigm,
                 'hyperparameters':  best_params,
-                'metrics':          {'balanced_accuracy': best_score, **metrics},
+                'metrics':          checkpoint_metrics,
                 'feature_importance': feature_imp,
                 'input_shape':      [len(X), int(X[0].shape[1])],
                 'predictions': {
@@ -643,6 +668,88 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
             np.array(subject_order)
         )
 
+    def _loo_score_multilabel(
+        self,
+        params: Dict,
+        sequences: np.ndarray,
+        y: np.ndarray,
+        cv_splits: list,
+        subject_ids: Optional[np.ndarray],
+        unique_subjects: Optional[np.ndarray]
+    ):
+        """
+        Multi-label counterpart of _loo_score() — identical structure to
+        HMMModel._loo_score_multilabel() but calls _fit_hsmm(). Fits N
+        independent one-vs-rest HSMM pairs (one per label in
+        self.label_names) per fold.
+        """
+        label_names = self.label_names
+        n_labels = len(label_names)
+
+        y_true_rows, y_pred_rows, y_proba_rows = [], [], []
+        subject_order = []
+        per_fold_results = []
+
+        for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
+
+            train_sample_idx, test_sample_idx, test_subjects = resolve_fold_masks(
+                subject_ids, unique_subjects, train_idx, test_idx, fold_idx
+            )
+
+            seqs_train = [sequences[i] for i in train_sample_idx]
+            y_train = y[train_sample_idx]
+            seqs_test = [sequences[i] for i in test_sample_idx]
+            y_test_rows = y[test_sample_idx]
+
+            label_hsmms = {}
+            for li, label_name in enumerate(label_names):
+                pos_seqs = [s for s, row in zip(seqs_train, y_train) if row[li] == 1]
+                neg_seqs = [s for s, row in zip(seqs_train, y_train) if row[li] == 0]
+                label_hsmms[label_name] = (
+                    self._fit_hsmm(pos_seqs, **params),
+                    self._fit_hsmm(neg_seqs, **params),
+                )
+
+            n_test = len(seqs_test)
+            fold_preds = np.zeros((n_test, n_labels), dtype=int)
+            fold_proba = np.zeros((n_test, n_labels), dtype=float)
+
+            for si, seq in enumerate(seqs_test):
+                for li, label_name in enumerate(label_names):
+                    hsmm_pos, hsmm_neg = label_hsmms[label_name]
+                    delta = (hsmm_pos.score(seq) - hsmm_neg.score(seq)) / len(seq)
+                    prob = self._stable_sigmoid(delta)
+                    fold_proba[si, li] = prob
+                    fold_preds[si, li] = int(prob >= 0.5)
+
+            y_true_rows.append(y_test_rows)
+            y_pred_rows.append(fold_preds)
+            y_proba_rows.append(fold_proba)
+            subject_order.extend(list(test_subjects))
+
+            fold_score = f1_score(y_test_rows, fold_preds, average="macro", zero_division=0)
+
+            per_fold_results.append(build_fold_record(
+                fold_idx, test_subjects, subject_ids,
+                y_test_rows.tolist(), fold_preds.tolist(), fold_proba.tolist(), fold_score,
+                epochs_trained=params.get("n_iter"),
+            ))
+
+        y_true_all = np.vstack(y_true_rows)
+        y_pred_all = np.vstack(y_pred_rows)
+        y_proba_all = np.vstack(y_proba_rows)
+        score = f1_score(y_true_all, y_pred_all, average="macro", zero_division=0)
+
+        return (
+            score,
+            params,
+            y_true_all,
+            y_pred_all,
+            y_proba_all,
+            per_fold_results,
+            np.array(subject_order)
+        )
+
     def _fit_hsmm(
         self,
         seq_list: list,
@@ -709,10 +816,11 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
         print("\n[HSMM] Computing feature importance via permutation "
               f"({n_channels} channels × LOO CV, parallel across channels) ...")
 
-        baseline_ba, *_ = self._loo_score(
+        score_fn = self._loo_score_multilabel if self.multilabel else self._loo_score
+        baseline_ba, *_ = score_fn(
             best_params, X, y, cv_splits, subject_ids, unique_subjects
         )
-        print(f"  Baseline BA: {baseline_ba:.4f}")
+        print(f"  Baseline score: {baseline_ba:.4f}")
 
         # Independent, order-invariant seeds so results stay deterministic
         # regardless of which worker finishes first.
@@ -761,11 +869,12 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
         baseline_ba: float,
         seed: np.random.SeedSequence
     ) -> float:
-        """Permute one channel and return the BA drop vs. baseline. Runs as a
-        joblib worker task, one per channel, in compute_feature_importance()."""
+        """Permute one channel and return the score drop vs. baseline. Runs as
+        a joblib worker task, one per channel, in compute_feature_importance()."""
         rng = np.random.default_rng(seed)
         seqs_perm = self._permute_channel(X, channel, rng)
-        ba_d, *_ = self._loo_score(
+        score_fn = self._loo_score_multilabel if self.multilabel else self._loo_score
+        ba_d, *_ = score_fn(
             best_params, seqs_perm, y, cv_splits, subject_ids, unique_subjects
         )
         return baseline_ba - ba_d
@@ -824,6 +933,38 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
               f"{np.round(self.fitted_hsmm0._duration_rates, 2)}")
 
         return self.fitted_hsmm0, self.fitted_hsmm1
+
+    def fit_for_analysis_multilabel(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        label_names: List[str],
+        n_components: int,
+        covariance_type: str = 'diag',
+        n_iter: int = 100,
+        max_duration: int = 200
+    ) -> Dict[str, Tuple[GaussianHSMM, GaussianHSMM]]:
+        """
+        Multi-label counterpart of fit_for_analysis() — fits one one-vs-rest
+        HSMM pair per label on the FULL dataset (no CV), storing the result
+        in self.fitted_hsmms[label_name] = (hsmm_pos, hsmm_neg).
+        """
+        print(f"\n[HSMM Analysis] Fitting on full data (multilabel)")
+        print(f"  n_components={n_components}, covariance_type={covariance_type}, "
+              f"max_duration={max_duration}")
+
+        self.fitted_hsmms = {}
+        for li, label_name in enumerate(label_names):
+            pos_seqs = [X[i] for i in range(len(X)) if y[i, li] == 1]
+            neg_seqs = [X[i] for i in range(len(X)) if y[i, li] == 0]
+            print(f"  Label '{label_name}': {len(pos_seqs)} positive, {len(neg_seqs)} negative")
+            self.fitted_hsmms[label_name] = (
+                self._fit_hsmm(pos_seqs, n_components, covariance_type, n_iter, max_duration),
+                self._fit_hsmm(neg_seqs, n_components, covariance_type, n_iter, max_duration),
+            )
+
+        print(f"  ✓ {len(label_names)} one-vs-rest HSMM pairs fitted successfully")
+        return self.fitted_hsmms
 
     # =========================================================================
     # HSMM-exclusive: duration distribution visualization

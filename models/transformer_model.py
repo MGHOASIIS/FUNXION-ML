@@ -19,11 +19,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import ParameterGrid
-from sklearn.metrics import balanced_accuracy_score
+from sklearn.metrics import balanced_accuracy_score, f1_score
 
 from models.base_model import BaseModel, ModelResults, PyTorchModelMixin
 from config.constants import DEVICE
-from utils.metrics import compute_metrics
+from utils.metrics import compute_metrics, compute_multilabel_metrics
 from utils.training import (
     EarlyStopping, build_loo_splits, resolve_fold_masks,
     build_fold_record, print_best,
@@ -240,6 +240,8 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
         task=None,
         paradigm=None,
         channel_names=None,
+        multilabel=False,
+        label_names=None,
     ):
         super().__init__(
             model_name="Transformer",
@@ -249,6 +251,8 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
             task=task,
             paradigm=paradigm,
             channel_names=channel_names,
+            multilabel=multilabel,
+            label_names=label_names,
         )
 
     def train_and_evaluate(
@@ -280,7 +284,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
             param_grid = self._get_default_param_grid()
 
         X_tensor = torch.tensor(X, dtype=torch.float32)
-        y_tensor = torch.tensor(y, dtype=torch.long)
+        y_tensor = torch.tensor(y, dtype=torch.float32 if self.multilabel else torch.long)
 
         # Subject-level or sample-level LOO CV
         cv_splits, unique_subjects = build_loo_splits(len(X), subject_ids, "Transformer")
@@ -299,7 +303,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
         best_result = max(results, key=lambda t: t[0])
         (
             best_score, best_params, y_true, y_pred,
-            y_proba, avg_proj_weights, per_fold_results
+            y_proba, avg_proj_weights, per_fold_results, subject_order
         ) = best_result
 
         print_best("Transformer", best_params, best_score)
@@ -307,7 +311,12 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
         # Feature importance from input projection weights
         feature_imp = self._compute_channel_importance(avg_proj_weights)
 
-        metrics = compute_metrics(y_true, y_pred, y_proba)
+        if self.multilabel:
+            metrics = compute_multilabel_metrics(y_true, y_pred, y_proba, self.label_names)
+            checkpoint_metrics = {"macro_f1": best_score, **metrics}
+        else:
+            metrics = compute_metrics(y_true, y_pred, y_proba)
+            checkpoint_metrics = {"balanced_accuracy": best_score, **metrics}
 
         # Save checkpoint
         if self.checkpoint_dir:
@@ -317,7 +326,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
                 {
                     "model_name": "Transformer",
                     "hyperparameters": best_params,
-                    "metrics": {"balanced_accuracy": best_score, **metrics},
+                    "metrics": checkpoint_metrics,
                     "feature_importance": feature_imp,
                     "input_shape": list(X.shape),
                     "predictions": {
@@ -339,7 +348,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
             y_pred=y_pred,
             y_proba=y_proba,
             X_shape=X.shape,
-            subject_ids=subject_ids,
+            subject_ids=subject_order if subject_ids is not None else subject_ids,
             per_fold_results=per_fold_results,
         )
 
@@ -364,6 +373,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
         y_true, y_pred, y_proba = [], [], []
         all_proj_weights = []
         per_fold_results = []
+        subject_order = []
 
         g = torch.Generator().manual_seed(42)
         input_dim = X.shape[2]  # C dimension
@@ -389,7 +399,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
                 dim_feedforward=cfg["dim_feedforward"],
                 dropout=cfg["dropout"],
                 dropout_fc=cfg["dropout_fc"],
-                n_classes=2,
+                n_classes=self.n_labels if self.multilabel else 2,
             ).to(DEVICE)
 
             train_dataset = TensorDataset(X_train, y_train)
@@ -405,7 +415,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
                 lr=cfg["lr"],
                 weight_decay=cfg.get("weight_decay", 1e-4),
             )
-            criterion = nn.CrossEntropyLoss()
+            criterion = nn.BCEWithLogitsLoss() if self.multilabel else nn.CrossEntropyLoss()
 
             early_stopper = EarlyStopping(
                 patience=self.patience,
@@ -418,7 +428,8 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
 
             for epoch in range(cfg["epochs"]):
                 train_loss, train_acc = self.train_epoch(
-                    model, train_loader, optimizer, criterion, DEVICE
+                    model, train_loader, optimizer, criterion, DEVICE,
+                    multilabel=self.multilabel,
                 )
 
                 if train_loss < best_train_loss:
@@ -458,17 +469,26 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
             model.eval()
             with torch.no_grad():
                 logits = model(X_test.to(DEVICE))
-                probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
-                preds = (probs >= 0.5).astype(int)
+                if self.multilabel:
+                    probs = torch.sigmoid(logits).cpu().numpy()
+                    preds = (probs >= 0.5).astype(int)
+                    y_test_tensor = torch.tensor(y_test_list, dtype=torch.float32).to(DEVICE)
+                else:
+                    probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
+                    preds = (probs >= 0.5).astype(int)
+                    y_test_tensor = torch.tensor(y_test_list, dtype=torch.long).to(DEVICE)
 
-                y_test_tensor = torch.tensor(y_test_list, dtype=torch.long).to(DEVICE)
                 val_loss = criterion(logits, y_test_tensor).item()
 
             y_true.extend(y_test_list)
             y_pred.extend(preds.tolist())
             y_proba.extend(probs.tolist())
+            subject_order.extend(list(test_subjects))
 
-            fold_ba = balanced_accuracy_score(y_test_list, preds)
+            if self.multilabel:
+                fold_ba = f1_score(y_test_list, preds, average="macro", zero_division=0)
+            else:
+                fold_ba = balanced_accuracy_score(y_test_list, preds)
 
             per_fold_results.append(build_fold_record(
                 fold_idx, test_subjects, subject_ids,
@@ -487,7 +507,10 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
             del model
             torch.cuda.empty_cache()
 
-        ba = balanced_accuracy_score(y_true, y_pred)
+        if self.multilabel:
+            ba = f1_score(y_true, y_pred, average="macro", zero_division=0)
+        else:
+            ba = balanced_accuracy_score(y_true, y_pred)
         avg_proj_weights = torch.stack(all_proj_weights).mean(dim=0)
 
         return (
@@ -498,6 +521,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
             np.array(y_proba),
             avg_proj_weights,
             per_fold_results,
+            np.array(subject_order),
         )
 
     def _compute_channel_importance(
@@ -566,7 +590,7 @@ class TransformerModel(BaseModel, PyTorchModelMixin):
                 dim_feedforward=self.best_params["dim_feedforward"],
                 dropout=self.best_params["dropout"],
                 dropout_fc=self.best_params["dropout_fc"],
-                n_classes=2,
+                n_classes=self.n_labels if self.multilabel else 2,
             )
             return temp_model
 

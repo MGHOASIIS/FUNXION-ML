@@ -23,23 +23,22 @@ class BasePreprocessor(ABC):
     def __init__(self):
         self.scaler = StandardScaler()
         self._fitted = False
-    
-    @abstractmethod
+
     def prepare_data(
         self,
         g1: Dict,
         g0: Dict
     ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """
-        Prepare data for model training.
-        
+        Prepare data for model training (binary paradigm).
+
         Parameters
         ----------
         g1 : Dict
             Group 1 data (e.g., patients) {id: tensor}
         g0 : Dict
             Group 0 data (e.g., controls) {id: tensor}
-        
+
         Returns
         -------
         X : np.ndarray
@@ -49,8 +48,54 @@ class BasePreprocessor(ABC):
         subject_ids : np.ndarray or None
             Subject identifiers for cross-validation
         """
+        all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
+        return self._prepare_from_sequences(all_tensors, y, subject_ids)
+
+    def prepare_data_multilabel(
+        self,
+        groups: Dict[str, Dict],
+        label_names: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        """
+        Prepare data for model training (multi-label paradigm).
+
+        Parameters
+        ----------
+        groups : Dict[str, Dict]
+            One subject-data dict per label name, e.g. from
+            ParadigmSelector.select_labels(). A sample may appear in more
+            than one group.
+        label_names : List[str]
+            Ordered label names — determines the column order of the
+            returned y matrix.
+
+        Returns
+        -------
+        X : np.ndarray
+            Prepared features
+        y : np.ndarray
+            Multi-hot label matrix, shape (N, len(label_names))
+        subject_ids : np.ndarray or None
+            Subject identifiers for cross-validation
+        """
+        all_tensors, y, subject_ids = self._collect_sequences_multilabel(groups, label_names)
+        return self._prepare_from_sequences(all_tensors, y, subject_ids)
+
+    @abstractmethod
+    def _prepare_from_sequences(
+        self,
+        all_tensors: List,
+        y: np.ndarray,
+        subject_ids: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        """
+        Method-specific transform (truncate/pad/window/etc.), shared by
+        prepare_data() and prepare_data_multilabel() — this code never needs
+        to know whether y is a 1-D binary vector or an (N, n_labels)
+        multi-hot matrix, since it only ever passes y through untouched.
+        """
         pass
-    
+
     def _collect_sequences(
         self,
         g1: Dict,
@@ -85,7 +130,48 @@ class BasePreprocessor(ABC):
             subject_ids.append(f"g0_{extract_subject_id(k)}")
         
         return all_tensors, np.array(labels, dtype=np.int32), subject_ids
-    
+
+    def _collect_sequences_multilabel(
+        self,
+        groups: Dict[str, Dict],
+        label_names: List[str],
+    ) -> Tuple[List, np.ndarray, List[str]]:
+        """
+        Collect sequences across N named label groups, building a multi-hot
+        label matrix. The same underlying sample (dict key) may appear in
+        more than one group — that's what makes this multi-label rather
+        than mutually-exclusive multiclass.
+
+        Returns
+        -------
+        all_tensors : List
+            One tensor per unique sample key (union across all groups)
+        y : np.ndarray
+            Multi-hot label matrix, shape (N, len(label_names))
+        subject_ids : List[str]
+            Subject identifiers (may repeat if a subject has multiple
+            samples, e.g. event-window data)
+        """
+        sample_tensors: Dict[str, object] = {}
+        sample_order: List[str] = []
+        for label_name in label_names:
+            for k, tensor_data in groups.get(label_name, {}).items():
+                if k not in sample_tensors:
+                    sample_tensors[k] = tensor_data
+                    sample_order.append(k)
+
+        all_tensors = [sample_tensors[k] for k in sample_order]
+
+        y = np.zeros((len(sample_order), len(label_names)), dtype=np.int32)
+        for col, label_name in enumerate(label_names):
+            members = set(groups.get(label_name, {}).keys())
+            for row, k in enumerate(sample_order):
+                if k in members:
+                    y[row, col] = 1
+
+        subject_ids = [extract_subject_id(k) for k in sample_order]
+        return all_tensors, y, subject_ids
+
     def _extract_signals(self, tensors: List) -> List:
         """Extract signal columns (remove timestamp if present)."""
         return [t[:, 1:] if t.shape[1] > 18 else t for t in tensors]
@@ -111,15 +197,15 @@ class TruncatePreprocessor(BasePreprocessor):
         super().__init__()
         self.output_format = output_format
     
-    def prepare_data(
+    def _prepare_from_sequences(
         self,
-        g1: Dict,
-        g0: Dict
+        all_tensors: List,
+        y: np.ndarray,
+        subject_ids: List[str],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Prepare data by truncating to minimum length."""
-        all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
         signals = self._extract_signals(all_tensors)
-        
+
         # Find minimum length
         T_min = min(t.shape[0] for t in signals)
         print(f"\n[TruncatePreprocessor] Truncating to T_min = {T_min}")
@@ -170,15 +256,16 @@ class SlidingWindowPreprocessor(BasePreprocessor):
         self.stride = int(window_size * (1 - overlap))
         self.output_format = output_format
     
-    def prepare_data(
+    def _prepare_from_sequences(
         self,
-        g1: Dict,
-        g0: Dict
+        all_tensors: List,
+        y: np.ndarray,
+        subject_ids: List[str],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Prepare data using sliding windows."""
-        all_tensors, labels, subject_ids = self._collect_sequences(g1, g0)
+        labels = y
         signals = self._extract_signals(all_tensors)
-        
+
         all_windows = []
         all_window_labels = []
         all_window_subject_ids = []
@@ -257,26 +344,21 @@ class VariableLengthPreprocessor(BasePreprocessor):
     subject_ids : np.ndarray shape (N,)
     """
 
-    def prepare_data(
+    def _prepare_from_sequences(
         self,
-        g1: Dict,
-        g0: Dict
+        all_tensors: List,
+        y: np.ndarray,
+        subject_ids: List[str],
     ) -> Tuple[list, np.ndarray, np.ndarray]:
         """
-        Extract variable-length z-scored sequences from g1 and g0.
-
-        Parameters
-        ----------
-        g1 : Dict  {subject_id: tensor (T_i, C) or (T_i, C+1)}
-        g0 : Dict  {subject_id: tensor (T_i, C) or (T_i, C+1)}
+        Extract variable-length z-scored sequences.
 
         Returns
         -------
         X           : list of np.ndarray (T_i, 18)
-        y           : np.ndarray (N,)
+        y           : np.ndarray (N,) or (N, n_labels)
         subject_ids : np.ndarray (N,)
         """
-        all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
         signals = self._extract_signals(all_tensors)
         signals = [self._to_numpy(s) for s in signals]
 
@@ -351,6 +433,27 @@ class ResamplingWrapper(BasePreprocessor):
         g1_resampled = self._resample_group(g1)
         g0_resampled = self._resample_group(g0)
         return self.inner.prepare_data(g1_resampled, g0_resampled)
+
+    def prepare_data_multilabel(
+        self,
+        groups: Dict[str, Dict],
+        label_names: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        print(
+            f"\n[ResamplingWrapper] Resampling {self.original_rate} Hz "
+            f"→ {self.target_rate} Hz before '{type(self.inner).__name__}' (multilabel)"
+        )
+        resampled_groups = {
+            label_name: self._resample_group(group)
+            for label_name, group in groups.items()
+        }
+        return self.inner.prepare_data_multilabel(resampled_groups, label_names)
+
+    def _prepare_from_sequences(self, all_tensors, y, subject_ids):
+        raise NotImplementedError(
+            "ResamplingWrapper overrides prepare_data()/prepare_data_multilabel() "
+            "directly and delegates to self.inner — this method is never called."
+        )
 
 
 class PreprocessorFactory:
@@ -475,15 +578,15 @@ class PaddingPreprocessor(BasePreprocessor):
         self.output_format = output_format
         self.pad_value = pad_value
     
-    def prepare_data(
+    def _prepare_from_sequences(
         self,
-        g1: Dict,
-        g0: Dict
+        all_tensors: List,
+        y: np.ndarray,
+        subject_ids: List[str],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Prepare data by padding to maximum length."""
-        all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
         signals = self._extract_signals(all_tensors)
-        
+
         # Find maximum length
         T_max = max(t.shape[0] for t in signals)
         print(f"\n[PaddingPreprocessor] Padding to T_max = {T_max}")
@@ -578,13 +681,13 @@ class DTWEmbeddingPreprocessor(BasePreprocessor):
         print(f"  DTW pairs: {total}/{total} — done")
         return D
 
-    def prepare_data(
+    def _prepare_from_sequences(
         self,
-        g1: Dict,
-        g0: Dict
+        all_tensors: List,
+        y: np.ndarray,
+        subject_ids: List[str],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Prepare data using DTW + embedding."""
-        all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
         signals = self._extract_signals(all_tensors)
 
         print(f"\n[DTWEmbeddingPreprocessor] Computing DTW distance matrix "
@@ -648,13 +751,13 @@ class PhaseShiftPreprocessor(BasePreprocessor):
         self.shift_fraction = float(np.clip(shift_fraction, 0.0, 0.999))
         self.output_format = output_format
 
-    def prepare_data(
+    def _prepare_from_sequences(
         self,
-        g1: Dict,
-        g0: Dict
+        all_tensors: List,
+        y: np.ndarray,
+        subject_ids: List[str],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Apply circular phase shift then truncate to T_min."""
-        all_tensors, y, subject_ids = self._collect_sequences(g1, g0)
         signals = self._extract_signals(all_tensors)
 
         print(f"\n[PhaseShiftPreprocessor] shift_fraction={self.shift_fraction:.3f}")
@@ -726,9 +829,35 @@ class AugmentedPreprocessor(BasePreprocessor):
         g0: Dict
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Prepare data with augmentation."""
-        # Get base preprocessed data
         X_base, y_base, subject_ids_base = self.base_preprocessor.prepare_data(g1, g0)
-        
+        return self._augment(X_base, y_base, subject_ids_base)
+
+    def prepare_data_multilabel(
+        self,
+        groups: Dict[str, Dict],
+        label_names: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Prepare multi-label data with augmentation."""
+        X_base, y_base, subject_ids_base = self.base_preprocessor.prepare_data_multilabel(
+            groups, label_names
+        )
+        return self._augment(X_base, y_base, subject_ids_base)
+
+    def _prepare_from_sequences(self, all_tensors, y, subject_ids):
+        raise NotImplementedError(
+            "AugmentedPreprocessor overrides prepare_data()/prepare_data_multilabel() "
+            "directly and delegates to self.base_preprocessor — this method is never called."
+        )
+
+    def _augment(
+        self,
+        X_base: np.ndarray,
+        y_base: np.ndarray,
+        subject_ids_base: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Augmentation logic shared by prepare_data() and prepare_data_multilabel() —
+        y_base may be a 1-D binary vector or an (N, n_labels) multi-hot matrix; every
+        operation below (copy, concatenate along axis=0) works identically either way."""
         print(f"\n[AugmentedPreprocessor] Base data: {X_base.shape}")
         print(f"[AugmentedPreprocessor] Applying {len(self.augmenters)} augmentations, "
               f"{self.n_augmentations} times each")

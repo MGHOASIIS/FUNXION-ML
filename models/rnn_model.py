@@ -16,12 +16,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import ParameterGrid
-from sklearn.metrics import balanced_accuracy_score
+from sklearn.metrics import balanced_accuracy_score, f1_score
 from joblib import parallel_backend, Parallel, delayed
 
 from models.base_model import BaseModel, ModelResults, PyTorchModelMixin
 from config.constants import DEVICE
-from utils.metrics import compute_metrics
+from utils.metrics import compute_metrics, compute_multilabel_metrics
 from utils.training import (
     EarlyStopping, build_loo_splits, resolve_fold_masks,
     build_fold_record, print_best,
@@ -237,14 +237,16 @@ class RNNModel(BaseModel, PyTorchModelMixin):
     """RNN model wrapper with LOO CV and hyperparameter search."""
     
     def __init__(self, checkpoints_dir=None, patience=15, min_delta=1e-4, task=None,
-                 paradigm=None, channel_names=None):
+                 paradigm=None, channel_names=None, multilabel=False, label_names=None):
         super().__init__(model_name="RNN",
                          checkpoints_dir=checkpoints_dir,
                          patience=patience,
                          min_delta=min_delta,
                          task=task,
                          paradigm=paradigm,
-                         channel_names=channel_names)
+                         channel_names=channel_names,
+                         multilabel=multilabel,
+                         label_names=label_names)
         
     def train_and_evaluate(
         self,
@@ -277,8 +279,8 @@ class RNNModel(BaseModel, PyTorchModelMixin):
 
         # Convert to tensors
         X_tensor = torch.tensor(X, dtype=torch.float32)
-        y_tensor = torch.tensor(y, dtype=torch.long)
-        
+        y_tensor = torch.tensor(y, dtype=torch.float32 if self.multilabel else torch.long)
+
         # Handle subject-level CV if we have subject IDs
         cv_splits, unique_subjects = build_loo_splits(len(X), subject_ids, "RNN")
         
@@ -297,7 +299,8 @@ class RNNModel(BaseModel, PyTorchModelMixin):
 
         # Select best configuration
         best_result = max(results, key=lambda t: t[0])
-        best_score, best_params, y_true, y_pred, y_proba, avg_ih_weight, per_fold_results = best_result
+        (best_score, best_params, y_true, y_pred, y_proba, avg_ih_weight,
+         per_fold_results, subject_order) = best_result
         
         print_best("RNN", best_params, best_score)
         
@@ -305,17 +308,22 @@ class RNNModel(BaseModel, PyTorchModelMixin):
         feature_imp = self._compute_channel_importance(avg_ih_weight)
         
         # Compute metrics
-        metrics = compute_metrics(y_true, y_pred, y_proba)
+        if self.multilabel:
+            metrics = compute_multilabel_metrics(y_true, y_pred, y_proba, self.label_names)
+            checkpoint_metrics = {'macro_f1': best_score, **metrics}
+        else:
+            metrics = compute_metrics(y_true, y_pred, y_proba)
+            checkpoint_metrics = {'balanced_accuracy': best_score, **metrics}
 
         # Checkpoint best_model with all relevant info
         if self.checkpoint_dir:
             from datetime import datetime
             best_path = self.checkpoint_dir / f"best_model_BA{best_score:.4f}.pt"
-            
+
             torch.save({
                 'model_name': 'RNN',
                 'hyperparameters': best_params,
-                'metrics': {'balanced_accuracy': best_score, **metrics},
+                'metrics': checkpoint_metrics,
                 'feature_importance': feature_imp,
                 'input_shape': list(X.shape),
                 'predictions': {
@@ -336,7 +344,7 @@ class RNNModel(BaseModel, PyTorchModelMixin):
             y_pred=y_pred,
             y_proba=y_proba,
             X_shape=X.shape,
-            subject_ids=subject_ids,
+            subject_ids=subject_order if subject_ids is not None else subject_ids,
             per_fold_results=per_fold_results
         )
 
@@ -375,6 +383,7 @@ class RNNModel(BaseModel, PyTorchModelMixin):
         y_true, y_pred, y_proba = [], [], []
         all_ih_weights = []
         per_fold_results = []
+        subject_order = []
 
         g = torch.Generator().manual_seed(42)
         
@@ -401,7 +410,8 @@ class RNNModel(BaseModel, PyTorchModelMixin):
                 bidirectional=cfg["bidirectional"],
                 dropout_rnn=cfg["dropout_rnn"],
                 dropout_fc=cfg["dropout_fc"],
-                pooling=cfg["pooling"]
+                pooling=cfg["pooling"],
+                num_classes=self.n_labels if self.multilabel else 2,
             ).to(DEVICE)
             
             # Create data loader
@@ -414,7 +424,7 @@ class RNNModel(BaseModel, PyTorchModelMixin):
             )
             
             optimizer = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
-            criterion = nn.CrossEntropyLoss()
+            criterion = nn.BCEWithLogitsLoss() if self.multilabel else nn.CrossEntropyLoss()
             
             # Early stopping
             early_stopper = EarlyStopping(patience=self.patience, min_delta=self.min_delta, mode="min")
@@ -425,7 +435,8 @@ class RNNModel(BaseModel, PyTorchModelMixin):
             # Training loop with early stopping
             for epoch in range(cfg["epochs"]):
                 train_loss, train_acc = self.train_epoch(
-                    model, train_loader, optimizer, criterion, DEVICE
+                    model, train_loader, optimizer, criterion, DEVICE,
+                    multilabel=self.multilabel,
                 )
                 
                 if train_loss < best_train_loss:
@@ -463,18 +474,26 @@ class RNNModel(BaseModel, PyTorchModelMixin):
             model.eval()
             with torch.no_grad():
                 logits = model(X_test.to(DEVICE))
-                probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
-                preds = (probs >= 0.5).astype(int)
+                if self.multilabel:
+                    probs = torch.sigmoid(logits).cpu().numpy()
+                    preds = (probs >= 0.5).astype(int)
+                    y_test_tensor = torch.tensor(y_test_list, dtype=torch.float32).to(DEVICE)
+                else:
+                    probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
+                    preds = (probs >= 0.5).astype(int)
+                    y_test_tensor = torch.tensor(y_test_list, dtype=torch.long).to(DEVICE)
 
-                y_test_tensor = torch.tensor(y_test_list, dtype=torch.long).to(DEVICE)
                 val_loss = criterion(logits, y_test_tensor).item()
 
             y_true.extend(y_test_list)
             y_pred.extend(preds.tolist())
             y_proba.extend(probs.tolist())
+            subject_order.extend(list(test_subjects))
 
-            
-            fold_ba = balanced_accuracy_score(y_test_list, preds)
+            if self.multilabel:
+                fold_ba = f1_score(y_test_list, preds, average="macro", zero_division=0)
+            else:
+                fold_ba = balanced_accuracy_score(y_test_list, preds)
 
             per_fold_results.append(build_fold_record(
                 fold_idx, test_subjects, subject_ids,
@@ -500,9 +519,12 @@ class RNNModel(BaseModel, PyTorchModelMixin):
             del model
             torch.cuda.empty_cache()
         
-        # Compute balanced accuracy
-        ba = balanced_accuracy_score(y_true, y_pred)
-        
+        # Compute aggregate score
+        if self.multilabel:
+            ba = f1_score(y_true, y_pred, average="macro", zero_division=0)
+        else:
+            ba = balanced_accuracy_score(y_true, y_pred)
+
         # Average weights across folds
         avg_ih_weight = torch.stack(all_ih_weights).mean(dim=0)
         
@@ -512,8 +534,9 @@ class RNNModel(BaseModel, PyTorchModelMixin):
             np.array(y_true),
             np.array(y_pred),
             np.array(y_proba),
-            avg_ih_weight, 
-            per_fold_results
+            avg_ih_weight,
+            per_fold_results,
+            np.array(subject_order)
         )
     
     def _compute_channel_importance(self, weight_ih: torch.Tensor) -> Dict[str, float]:
@@ -592,7 +615,8 @@ class RNNModel(BaseModel, PyTorchModelMixin):
                 bidirectional=self.best_params["bidirectional"],
                 dropout_rnn=self.best_params["dropout_rnn"],
                 dropout_fc=self.best_params["dropout_fc"],
-                pooling=self.best_params["pooling"]
+                pooling=self.best_params["pooling"],
+                num_classes=self.n_labels if self.multilabel else 2,
             )
             
             return temp_model

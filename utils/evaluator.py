@@ -14,10 +14,12 @@ from sklearn.metrics import (
     balanced_accuracy_score, accuracy_score,
     precision_score, recall_score, f1_score,
     roc_curve, auc, roc_auc_score,
-    average_precision_score
+    average_precision_score, multilabel_confusion_matrix,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import pandas as pd
+
+from utils.metrics import auc_ci_bootstrap, compute_multilabel_metrics
 
 
 @dataclass
@@ -49,6 +51,29 @@ class EvaluationResults:
     # Optional
     subject_ids: Optional[np.ndarray] = None
     classification_report: Optional[str] = None
+
+
+@dataclass
+class MultilabelEvaluationResults:
+    """Multi-label counterpart of EvaluationResults."""
+    subset_accuracy: float
+    hamming_loss: float
+    macro_f1: float
+    micro_f1: float
+    macro_balanced_accuracy: Optional[float]
+
+    # Per-label breakdown: {label_name: {ba, auc, auc_ci_low, auc_ci_high}}
+    per_label: Dict[str, Dict[str, Optional[float]]]
+
+    # Per-label 2x2 confusion matrices: {label_name: np.ndarray}
+    confusion_matrices: Dict[str, np.ndarray]
+
+    label_names: List[str]
+    y_true: np.ndarray
+    y_pred: np.ndarray
+    y_proba: np.ndarray
+
+    subject_ids: Optional[np.ndarray] = None
 
 
 class ModelEvaluator:
@@ -132,7 +157,93 @@ class ModelEvaluator:
             subject_ids=subject_ids,
             classification_report=report
         )
-    
+
+    def evaluate_multilabel(
+        self,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        y_proba: np.ndarray,
+        label_names: List[str],
+        subject_ids: Optional[np.ndarray] = None
+    ) -> MultilabelEvaluationResults:
+        """
+        Multi-label counterpart of evaluate(). y_true/y_pred/y_proba are
+        (N, len(label_names)) — a subject may be positive for more than one
+        label at once, so there's no single confusion matrix or ROC curve;
+        instead each label gets its own one-vs-rest confusion matrix and
+        AUC, plus aggregate scores (subset accuracy, Hamming loss, macro/
+        micro F1) that account for partial correctness across labels.
+
+        Parameters
+        ----------
+        y_true, y_pred : np.ndarray
+            Multi-hot label matrices, shape (N, n_labels)
+        y_proba : np.ndarray
+            Per-label predicted probabilities, shape (N, n_labels)
+        label_names : List[str]
+            Names for each column, in order
+        subject_ids : np.ndarray, optional
+
+        Returns
+        -------
+        MultilabelEvaluationResults
+        """
+        y_true = np.asarray(y_true)
+        y_pred = np.asarray(y_pred)
+        y_proba = np.asarray(y_proba)
+
+        metrics = compute_multilabel_metrics(y_true, y_pred, y_proba, label_names)
+
+        cms = multilabel_confusion_matrix(y_true, y_pred)
+        confusion_matrices = {name: cms[i] for i, name in enumerate(label_names)}
+
+        return MultilabelEvaluationResults(
+            subset_accuracy=metrics["subset_accuracy"],
+            hamming_loss=metrics["hamming_loss"],
+            macro_f1=metrics["macro_f1"],
+            micro_f1=metrics["micro_f1"],
+            macro_balanced_accuracy=metrics["macro_balanced_accuracy"],
+            per_label=metrics["per_label"],
+            confusion_matrices=confusion_matrices,
+            label_names=label_names,
+            y_true=y_true,
+            y_pred=y_pred,
+            y_proba=y_proba,
+            subject_ids=subject_ids,
+        )
+
+    def print_report_multilabel(self, results: MultilabelEvaluationResults):
+        """Print a comprehensive multi-label evaluation report."""
+        print("\n" + "="*70)
+        print("Multi-Label Model Evaluation Report")
+        print("="*70)
+
+        print("\nAggregate Metrics:")
+        print(f"  Subset Accuracy (exact match): {results.subset_accuracy:.4f}")
+        print(f"  Hamming Loss:                  {results.hamming_loss:.4f}")
+        print(f"  Macro F1:                      {results.macro_f1:.4f}")
+        print(f"  Micro F1:                      {results.micro_f1:.4f}")
+        if results.macro_balanced_accuracy is not None:
+            print(f"  Macro Balanced Accuracy:       {results.macro_balanced_accuracy:.4f}")
+
+        print("\nPer-Label Metrics:")
+        for name, m in results.per_label.items():
+            ba_str = f"{m['ba']:.4f}" if m['ba'] is not None else "N/A"
+            auc_str = (f"{m['auc']:.4f} [{m['auc_ci_low']:.4f}, {m['auc_ci_high']:.4f}]"
+                       if m['auc'] is not None else "N/A")
+            print(f"  {name}: BA={ba_str}  AUC={auc_str}")
+
+        print("\nData Information:")
+        print(f"  Total Samples: {len(results.y_true)}")
+        print(f"  Labels:        {results.label_names}")
+        for i, name in enumerate(results.label_names):
+            print(f"    {name}: {int(results.y_true[:, i].sum())} positive")
+        if results.subject_ids is not None:
+            n_subjects = len(np.unique(results.subject_ids))
+            print(f"  Unique Subjects: {n_subjects}")
+
+        print("="*70 + "\n")
+
     def _compute_auc_ci(
         self,
         y_true: np.ndarray,
@@ -142,46 +253,20 @@ class ModelEvaluator:
     ) -> Tuple[float, float]:
         """
         Compute AUC confidence interval via bootstrapping.
-        
-        Parameters
-        ----------
-        y_true : np.ndarray
-            True labels
-        y_proba : np.ndarray
-            Predicted probabilities
-        n_bootstraps : int
-            Number of bootstrap samples
-        confidence_level : float
-            Confidence level (e.g., 0.95 for 95% CI)
-        
+
+        Delegates to utils.metrics.auc_ci_bootstrap — same seed (42), same
+        bootstrap count, same percentile math, so results are identical to
+        what this method computed inline before. Kept as a thin wrapper so
+        existing call sites (evaluate()) don't need to change.
+
         Returns
         -------
         Tuple[float, float]
             (lower_bound, upper_bound)
         """
-        rng = np.random.RandomState(42)
-        aucs = []
-        
-        n = len(y_true)
-        for _ in range(n_bootstraps):
-            # Bootstrap sample
-            indices = rng.randint(0, n, n)
-            
-            # Skip if only one class present
-            if len(np.unique(y_true[indices])) < 2:
-                continue
-            
-            try:
-                auc_val = roc_auc_score(y_true[indices], y_proba[indices])
-                aucs.append(auc_val)
-            except:
-                continue
-        
-        # Compute percentiles
-        alpha = 1 - confidence_level
-        lower = np.percentile(aucs, alpha/2 * 100)
-        upper = np.percentile(aucs, (1 - alpha/2) * 100)
-        
+        _, (lower, upper) = auc_ci_bootstrap(
+            y_true, y_proba, n_boot=n_bootstraps, seed=42, ci=confidence_level
+        )
         return (lower, upper)
     
     def _compute_class_metrics(
@@ -442,15 +527,64 @@ class Visualizer:
         ax.set_title(title, fontsize=14)
         ax.legend(loc='best', fontsize=10)
         ax.grid(alpha=0.3)
-        
+
         plt.tight_layout()
-        
+
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             print(f"[Saved] {save_path}")
-        
+
         plt.show()
-    
+
+    @staticmethod
+    def plot_multilabel_confusion_matrices(
+        confusion_matrices: Dict[str, np.ndarray],
+        title: str = "Per-Label Confusion Matrices",
+        save_path: Optional[str] = None
+    ):
+        """
+        Plot a grid of one-vs-rest 2x2 confusion matrices, one per label.
+
+        Parameters
+        ----------
+        confusion_matrices : Dict[str, np.ndarray]
+            {label_name: 2x2 confusion matrix}, e.g. from
+            MultilabelEvaluationResults.confusion_matrices or
+            sklearn.metrics.multilabel_confusion_matrix.
+        title : str
+        save_path : str, optional
+        """
+        names = list(confusion_matrices.keys())
+        n = len(names)
+        ncols = min(n, 4)
+        nrows = (n + ncols - 1) // ncols
+
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
+        axes = np.atleast_1d(axes).flatten()
+
+        for i, name in enumerate(names):
+            ax = axes[i]
+            sns.heatmap(
+                confusion_matrices[name], annot=True, fmt='d', cmap='Blues',
+                xticklabels=['Neg', 'Pos'], yticklabels=['Neg', 'Pos'],
+                ax=ax, cbar=False,
+            )
+            ax.set_title(name)
+            ax.set_xlabel('Predicted')
+            ax.set_ylabel('True')
+
+        for j in range(n, len(axes)):
+            axes[j].axis('off')
+
+        plt.suptitle(title, fontsize=14)
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"[Saved] {save_path}")
+
+        plt.show()
+
 
 
 # Example usage

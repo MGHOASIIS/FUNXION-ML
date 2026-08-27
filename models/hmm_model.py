@@ -13,18 +13,18 @@ transition plotting, state-specific feature importance, patient vs control
 comparison) is shared with HSMMModel via StateSequenceAnalysisMixin in
 models/state_sequence_analysis.py — see that module for details.
 """
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import json
 import numpy as np
 from pathlib import Path
 from sklearn.model_selection import ParameterGrid
-from sklearn.metrics import balanced_accuracy_score
+from sklearn.metrics import balanced_accuracy_score, f1_score
 from hmmlearn.hmm import GaussianHMM
 from joblib import parallel_backend, Parallel, delayed
 
 from models.base_model import BaseModel, ModelResults
 from models.state_sequence_analysis import StateSequenceAnalysisMixin
-from utils.metrics import compute_metrics
+from utils.metrics import compute_metrics, compute_multilabel_metrics
 from utils.training import build_loo_splits, resolve_fold_masks, build_fold_record, print_best
 
 
@@ -43,7 +43,8 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
     training.
     """
 
-    def __init__(self, checkpoints_dir=None, task=None, paradigm=None, channel_names=None):
+    def __init__(self, checkpoints_dir=None, task=None, paradigm=None, channel_names=None,
+                 multilabel=False, label_names=None):
         """
         Parameters
         ----------
@@ -56,6 +57,11 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         channel_names : list of str, optional
             Input channel names, e.g. dataset_config["channels"]. Used for
             feature-importance labelling.
+        multilabel : bool
+            If True, fit N independent one-vs-rest HMM pairs (one per label)
+            instead of a single class-0-vs-class-1 pair.
+        label_names : list of str, optional
+            Required when multilabel=True.
 
         Note: patience and min_delta are not used by the HMM (no iterative
         training loop), but are accepted by BaseModel and left as None.
@@ -68,11 +74,16 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
             task=task,
             paradigm=paradigm,
             channel_names=channel_names,
+            multilabel=multilabel,
+            label_names=label_names,
         )
 
         # Stored after fit_for_analysis() — used by all analysis methods
-        self.fitted_hmm0: Optional[GaussianHMM] = None   # control model
-        self.fitted_hmm1: Optional[GaussianHMM] = None   # patient/condition model
+        self.fitted_hmm0: Optional[GaussianHMM] = None   # control model (binary only)
+        self.fitted_hmm1: Optional[GaussianHMM] = None   # patient/condition model (binary only)
+
+        # Stored after fit_for_analysis_multilabel() — one-vs-rest pair per label
+        self.fitted_hmms: Dict[str, Tuple[GaussianHMM, GaussianHMM]] = {}
 
     def _get_fitted(self, cls_idx: int):
         return self.fitted_hmm0 if cls_idx == 0 else self.fitted_hmm1
@@ -119,9 +130,10 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         print(f"[HMM] Evaluating {len(grid)} hyperparameter combinations...")
 
         # Parallel search — hmmlearn is CPU-only and process-safe
+        score_fn = self._loo_score_multilabel if self.multilabel else self._loo_score
         with parallel_backend("loky", inner_max_num_threads=1):
             results = Parallel(n_jobs=-1, verbose=10)(
-                delayed(self._loo_score)(
+                delayed(score_fn)(
                     params, X, y, cv_splits, subject_ids, unique_subjects
                 )
                 for params in grid
@@ -137,8 +149,9 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         # Sanity check: every prediction's subject ID must agree with its own
         # y_true label (g1_ tag → label 1, g0_ tag → label 0). This is the
         # invariant that a patients-first/controls-first ordering mismatch
-        # between IDs and predictions would violate.
-        if subject_ids is not None:
+        # between IDs and predictions would violate. Binary-only — multilabel
+        # subject_ids have no g1_/g0_ prefix (see _collect_sequences_multilabel).
+        if not self.multilabel and subject_ids is not None:
             assert len(subject_order) == len(y_true), (
                 f"subject_order length {len(subject_order)} != y_true length {len(y_true)}"
             )
@@ -150,19 +163,30 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
                 )
 
         # ── Auto-fit on full data using best LOO CV params ────────────────────
-        # This populates self.fitted_hmm0 and self.fitted_hmm1 so downstream
-        # analysis methods (decode_sequence, plot_emission_distributions etc.)
-        # work immediately after train_and_evaluate() without any extra call.
+        # This populates self.fitted_hmm0/self.fitted_hmm1 (binary) or
+        # self.fitted_hmms (multilabel) so downstream analysis methods work
+        # immediately after train_and_evaluate() without any extra call.
         # We use the best params found by LOO CV — not BIC/AIC — so the
         # interpretation reflects the actual best-performing configuration.
-        print(f"\n[HMM] Fitting on full data with best params for analysis ...")
-        self.fit_for_analysis(
-            X               = X,
-            y               = y,
-            n_components    = best_params["n_components"],
-            covariance_type = best_params["covariance_type"],
-            n_iter          = best_params["n_iter"]
-        )
+        if self.multilabel:
+            print(f"\n[HMM] Fitting on full data with best params for analysis (multilabel) ...")
+            self.fit_for_analysis_multilabel(
+                X               = X,
+                y               = y,
+                label_names     = self.label_names,
+                n_components    = best_params["n_components"],
+                covariance_type = best_params["covariance_type"],
+                n_iter          = best_params["n_iter"]
+            )
+        else:
+            print(f"\n[HMM] Fitting on full data with best params for analysis ...")
+            self.fit_for_analysis(
+                X               = X,
+                y               = y,
+                n_components    = best_params["n_components"],
+                covariance_type = best_params["covariance_type"],
+                n_iter          = best_params["n_iter"]
+            )
 
         # Compute permutation feature importance using best params
         feature_imp = self.compute_feature_importance(
@@ -175,7 +199,12 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         )
 
         # Compute aggregate metrics
-        metrics = compute_metrics(y_true, y_pred, y_proba)
+        if self.multilabel:
+            metrics = compute_multilabel_metrics(y_true, y_pred, y_proba, self.label_names)
+            checkpoint_metrics = {'macro_f1': best_score, **metrics}
+        else:
+            metrics = compute_metrics(y_true, y_pred, y_proba)
+            checkpoint_metrics = {'balanced_accuracy': best_score, **metrics}
 
         # ── Save best model checkpoint ────────────────────────────────────────
         # Always save — if checkpoint_dir was not explicitly provided (i.e.
@@ -206,7 +235,7 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
                 'task':             self.task,
                 'paradigm':         self.paradigm,
                 'hyperparameters':  best_params,
-                'metrics':          {'balanced_accuracy': best_score, **metrics},
+                'metrics':          checkpoint_metrics,
                 'feature_importance': feature_imp,
                 'input_shape':      [len(X), int(X[0].shape[1])],
                 'predictions': {
@@ -333,6 +362,102 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
             np.array(subject_order)
         )
 
+    def _loo_score_multilabel(
+        self,
+        params: Dict,
+        sequences: np.ndarray,
+        y: np.ndarray,
+        cv_splits: list,
+        subject_ids: Optional[np.ndarray],
+        unique_subjects: Optional[np.ndarray]
+    ):
+        """
+        Multi-label counterpart of _loo_score(). Instead of one class-0-vs-
+        class-1 HMM pair, fits N independent one-vs-rest HMM pairs — one per
+        label in self.label_names — per fold. Each test sequence gets N
+        independent probabilities (does it have label k, yes/no), reusing
+        the exact same LLR → sigmoid scoring as the binary path, applied
+        once per label.
+
+        Note: this is N times the HMM fits per fold compared to the binary
+        path (2*n_labels vs 2) — an inherent cost of one-vs-rest multi-label
+        with generative per-class models, not something optimized away here.
+
+        Returns
+        -------
+        tuple
+            (macro_f1, params, y_true, y_pred, y_proba, per_fold_results,
+             subject_order) — y_true/y_pred/y_proba are (N, n_labels).
+        """
+        label_names = self.label_names
+        n_labels = len(label_names)
+
+        y_true_rows, y_pred_rows, y_proba_rows = [], [], []
+        subject_order = []
+        per_fold_results = []
+
+        for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
+
+            train_sample_idx, test_sample_idx, test_subjects = resolve_fold_masks(
+                subject_ids, unique_subjects, train_idx, test_idx, fold_idx
+            )
+
+            seqs_train = [sequences[i] for i in train_sample_idx]
+            y_train = y[train_sample_idx]          # (n_train, n_labels)
+
+            seqs_test = [sequences[i] for i in test_sample_idx]
+            y_test_rows = y[test_sample_idx]        # (n_test, n_labels)
+
+            # Fit one one-vs-rest HMM pair per label
+            label_hmms = {}
+            for li, label_name in enumerate(label_names):
+                pos_seqs = [s for s, row in zip(seqs_train, y_train) if row[li] == 1]
+                neg_seqs = [s for s, row in zip(seqs_train, y_train) if row[li] == 0]
+                label_hmms[label_name] = (
+                    self._fit_hmm(pos_seqs, **params),
+                    self._fit_hmm(neg_seqs, **params),
+                )
+
+            n_test = len(seqs_test)
+            fold_preds = np.zeros((n_test, n_labels), dtype=int)
+            fold_proba = np.zeros((n_test, n_labels), dtype=float)
+
+            for si, seq in enumerate(seqs_test):
+                for li, label_name in enumerate(label_names):
+                    hmm_pos, hmm_neg = label_hmms[label_name]
+                    delta = (hmm_pos.score(seq) - hmm_neg.score(seq)) / len(seq)
+                    prob = self._stable_sigmoid(delta)
+                    fold_proba[si, li] = prob
+                    fold_preds[si, li] = int(prob >= 0.5)
+
+            y_true_rows.append(y_test_rows)
+            y_pred_rows.append(fold_preds)
+            y_proba_rows.append(fold_proba)
+            subject_order.extend(list(test_subjects))
+
+            fold_score = f1_score(y_test_rows, fold_preds, average="macro", zero_division=0)
+
+            per_fold_results.append(build_fold_record(
+                fold_idx, test_subjects, subject_ids,
+                y_test_rows.tolist(), fold_preds.tolist(), fold_proba.tolist(), fold_score,
+                epochs_trained=params.get("n_iter"),
+            ))
+
+        y_true_all = np.vstack(y_true_rows)
+        y_pred_all = np.vstack(y_pred_rows)
+        y_proba_all = np.vstack(y_proba_rows)
+        score = f1_score(y_true_all, y_pred_all, average="macro", zero_division=0)
+
+        return (
+            score,
+            params,
+            y_true_all,
+            y_pred_all,
+            y_proba_all,
+            per_fold_results,
+            np.array(subject_order)
+        )
+
     def _fit_hmm(
         self,
         seq_list: list,
@@ -451,20 +576,22 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         print("\n[HMM] Computing feature importance via permutation "
               f"({n_channels} channels × LOO CV) ...")
 
+        score_fn = self._loo_score_multilabel if self.multilabel else self._loo_score
+
         rng        = np.random.default_rng(42)
         importance = np.zeros(n_channels)
 
-        # Baseline balanced accuracy with all channels intact
-        baseline_ba, *_ = self._loo_score(
+        # Baseline score with all channels intact (macro-F1 if multilabel, else BA)
+        baseline_ba, *_ = score_fn(
             best_params, X, y, cv_splits, subject_ids, unique_subjects
         )
-        print(f"  Baseline BA: {baseline_ba:.4f}")
+        print(f"  Baseline score: {baseline_ba:.4f}")
 
-        # Permute each channel and measure accuracy drop
+        # Permute each channel and measure score drop
         for d in range(n_channels):
             print(f"  Channel {d+1:2d}/{n_channels}: {ch_names[d]:<30}", end=" ")
             seqs_perm = self._permute_channel(X, d, rng)
-            ba_d, *_ = self._loo_score(
+            ba_d, *_ = score_fn(
                 best_params, seqs_perm, y, cv_splits, subject_ids, unique_subjects
             )
             importance[d] = baseline_ba - ba_d
@@ -617,3 +744,49 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
 
         print("  ✓ Both class-conditional HMMs fitted successfully")
         return self.fitted_hmm0, self.fitted_hmm1
+
+    def fit_for_analysis_multilabel(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        label_names: List[str],
+        n_components: int,
+        covariance_type: str = 'diag',
+        n_iter: int = 100
+    ) -> Dict[str, Tuple[GaussianHMM, GaussianHMM]]:
+        """
+        Multi-label counterpart of fit_for_analysis() — fits one one-vs-rest
+        HMM pair per label on the FULL dataset (no CV), storing the result
+        in self.fitted_hmms[label_name] = (hmm_pos, hmm_neg).
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Array of (T_i, C) sequences, one per sample
+        y : np.ndarray
+            Multi-hot label matrix, shape (N, len(label_names))
+        label_names : List[str]
+            Names for each column of y, in order
+        n_components, covariance_type, n_iter
+            Same as fit_for_analysis()
+
+        Returns
+        -------
+        Dict[str, Tuple[GaussianHMM, GaussianHMM]]
+            self.fitted_hmms, for convenience
+        """
+        print(f"\n[HMM Analysis] Fitting on full data (multilabel)")
+        print(f"  n_components={n_components}, covariance_type={covariance_type}")
+
+        self.fitted_hmms = {}
+        for li, label_name in enumerate(label_names):
+            pos_seqs = [X[i] for i in range(len(X)) if y[i, li] == 1]
+            neg_seqs = [X[i] for i in range(len(X)) if y[i, li] == 0]
+            print(f"  Label '{label_name}': {len(pos_seqs)} positive, {len(neg_seqs)} negative")
+            self.fitted_hmms[label_name] = (
+                self._fit_hmm(pos_seqs, n_components, covariance_type, n_iter),
+                self._fit_hmm(neg_seqs, n_components, covariance_type, n_iter),
+            )
+
+        print(f"  ✓ {len(label_names)} one-vs-rest HMM pairs fitted successfully")
+        return self.fitted_hmms

@@ -17,12 +17,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import ParameterGrid
-from sklearn.metrics import balanced_accuracy_score
+from sklearn.metrics import balanced_accuracy_score, f1_score
 from joblib import parallel_backend, Parallel, delayed
 
 from models.base_model import BaseModel, ModelResults, PyTorchModelMixin
 from config.constants import DEVICE
-from utils.metrics import compute_metrics
+from utils.metrics import compute_metrics, compute_multilabel_metrics
 from utils.training import (
     EarlyStopping, build_loo_splits, resolve_fold_masks,
     build_fold_record, print_best,
@@ -143,7 +143,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
     """CNN model wrapper with LOO CV, early stopping, and hyperparameter search."""
 
     def __init__(self, checkpoints_dir=None, patience=10, min_delta=1e-4, task=None,
-                 paradigm=None, channel_names=None):
+                 paradigm=None, channel_names=None, multilabel=False, label_names=None):
         """
         Parameters
         ----------
@@ -159,6 +159,11 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             Classification paradigm index — stored for downstream tracking
         channel_names : list of str, optional
             Input channel names, e.g. dataset_config["channels"].
+        multilabel : bool
+            If True, train N independent per-label sigmoid outputs instead
+            of a single binary softmax output.
+        label_names : list of str, optional
+            Required when multilabel=True.
         """
         super().__init__(
             model_name="CNN",
@@ -168,6 +173,8 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             task=task,
             paradigm=paradigm,
             channel_names=channel_names,
+            multilabel=multilabel,
+            label_names=label_names,
         )
 
     def train_and_evaluate(
@@ -201,7 +208,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
 
         # Convert to tensors
         X_tensor = torch.tensor(X, dtype=torch.float32)
-        y_tensor = torch.tensor(y, dtype=torch.long)
+        y_tensor = torch.tensor(y, dtype=torch.float32 if self.multilabel else torch.long)
 
         # Set up LOO CV splits at the subject or sample level
         cv_splits, unique_subjects = build_loo_splits(len(X), subject_ids, "CNN")
@@ -220,7 +227,8 @@ class CNNModel(BaseModel, PyTorchModelMixin):
 
         # Select best configuration by balanced accuracy
         best_result = max(results, key=lambda t: t[0])
-        best_score, best_params, y_true, y_pred, y_proba, avg_first_layer_weights, per_fold_results = best_result
+        (best_score, best_params, y_true, y_pred, y_proba, avg_first_layer_weights,
+         per_fold_results, subject_order) = best_result
 
         print_best("CNN", best_params, best_score)
 
@@ -228,7 +236,12 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         feature_imp = self._compute_channel_importance(avg_first_layer_weights)
 
         # Compute aggregate metrics
-        metrics = compute_metrics(y_true, y_pred, y_proba)
+        if self.multilabel:
+            metrics = compute_multilabel_metrics(y_true, y_pred, y_proba, self.label_names)
+            checkpoint_metrics = {'macro_f1': best_score, **metrics}
+        else:
+            metrics = compute_metrics(y_true, y_pred, y_proba)
+            checkpoint_metrics = {'balanced_accuracy': best_score, **metrics}
 
         # Save best model checkpoint
         if self.checkpoint_dir:
@@ -238,7 +251,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             torch.save({
                 'model_name': 'CNN',
                 'hyperparameters': best_params,
-                'metrics': {'balanced_accuracy': best_score, **metrics},
+                'metrics': checkpoint_metrics,
                 'feature_importance': feature_imp,
                 'input_shape': list(X.shape),
                 'predictions': {
@@ -259,7 +272,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             y_pred=y_pred,
             y_proba=y_proba,
             X_shape=X.shape,
-            subject_ids=subject_ids,
+            subject_ids=subject_order if subject_ids is not None else subject_ids,
             per_fold_results=per_fold_results
         )
 
@@ -299,6 +312,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         y_true, y_pred, y_proba = [], [], []
         all_first_layer_weights = []   # accumulate across folds, not just last
         per_fold_results = []          # full per-fold diagnostics
+        subject_order = []             # fold-iteration order — see train_and_evaluate
 
         g = torch.Generator().manual_seed(42)
 
@@ -318,7 +332,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             # Instantiate model fresh for each fold
             model = CNNClassifier(
                 in_channels=X.shape[1],
-                n_classes=2,
+                n_classes=self.n_labels if self.multilabel else 2,
                 conv_channels=cfg["conv_channels"],
                 kernel_sizes=cfg["kernel_sizes"],
                 dropout_fc=cfg["dropout_fc"]
@@ -338,7 +352,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
                 lr=cfg["learning_rate"],
                 weight_decay=cfg["weight_decay"]
             )
-            criterion = nn.CrossEntropyLoss()
+            criterion = nn.BCEWithLogitsLoss() if self.multilabel else nn.CrossEntropyLoss()
 
             # Early stopping (mirrors RNN)
             early_stopper = EarlyStopping(
@@ -353,7 +367,8 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             # Training loop with early stopping
             for epoch in range(cfg["epochs"]):
                 train_loss, train_acc = self.train_epoch(
-                    model, train_loader, optimizer, criterion, DEVICE
+                    model, train_loader, optimizer, criterion, DEVICE,
+                    multilabel=self.multilabel,
                 )
 
                 if train_loss < best_train_loss:
@@ -389,18 +404,27 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             model.eval()
             with torch.no_grad():
                 logits = model(X_test.to(DEVICE))
-                probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
-                preds = (probs >= 0.5).astype(int)
+                if self.multilabel:
+                    probs = torch.sigmoid(logits).cpu().numpy()
+                    preds = (probs >= 0.5).astype(int)
+                    y_test_tensor = torch.tensor(y_test_list, dtype=torch.float32).to(DEVICE)
+                else:
+                    probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
+                    preds = (probs >= 0.5).astype(int)
+                    y_test_tensor = torch.tensor(y_test_list, dtype=torch.long).to(DEVICE)
 
                 # Compute held-out loss for generalization curve (overfitting monitoring)
-                y_test_tensor = torch.tensor(y_test_list, dtype=torch.long).to(DEVICE)
                 val_loss = criterion(logits, y_test_tensor).item()
 
             y_true.extend(y_test_list)
             y_pred.extend(preds.tolist())
             y_proba.extend(probs.tolist())
+            subject_order.extend(list(test_subjects))
 
-            fold_ba = balanced_accuracy_score(y_test_list, preds)
+            if self.multilabel:
+                fold_ba = f1_score(y_test_list, preds, average="macro", zero_division=0)
+            else:
+                fold_ba = balanced_accuracy_score(y_test_list, preds)
 
             per_fold_results.append(build_fold_record(
                 fold_idx, test_subjects, subject_ids,
@@ -421,7 +445,10 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             torch.cuda.empty_cache()
 
         # Aggregate
-        ba = balanced_accuracy_score(y_true, y_pred)
+        if self.multilabel:
+            ba = f1_score(y_true, y_pred, average="macro", zero_division=0)
+        else:
+            ba = balanced_accuracy_score(y_true, y_pred)
 
         # FIX: average weights across all folds (not just last fold)
         avg_first_layer_weights = torch.stack(all_first_layer_weights).mean(dim=0)
@@ -433,7 +460,8 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             np.array(y_pred),
             np.array(y_proba),
             avg_first_layer_weights,
-            per_fold_results
+            per_fold_results,
+            np.array(subject_order)
         )
 
     def _compute_channel_importance(self, first_layer_weights: torch.Tensor) -> Dict[str, float]:
@@ -515,7 +543,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
                 conv_channels=self.best_params["conv_channels"],
                 kernel_sizes=self.best_params["kernel_sizes"],
                 dropout_fc=self.best_params["dropout_fc"],
-                n_classes=2
+                n_classes=self.n_labels if self.multilabel else 2
             )
 
             return temp_model

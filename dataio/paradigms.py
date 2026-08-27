@@ -75,14 +75,70 @@ class ParadigmSelector:
         print(f"  Group 0: {len(g0)}")
         return g1, g0
 
+    def select_labels(
+        self,
+        patient_data: Dict,
+        control_data: Dict,
+        paradigm: int,
+    ) -> Dict[str, Dict]:
+        """Multi-label counterpart of select_paradigm().
+
+        Returns one subject-data dict per named label in the paradigm's
+        `labels` map (see dataset.yaml's `type: multilabel` schema). Unlike
+        g1/g0, a subject may appear in more than one returned group — that's
+        the point of multi-label classification.
+        """
+        patient_data = {
+            k: v for k, v in patient_data.items()
+            if extract_subject_id(k) not in self.exclude_g1
+        }
+        control_data = {
+            k: v for k, v in control_data.items()
+            if extract_subject_id(k) not in self.exclude_g0
+        }
+
+        pcfg = self.paradigm_configs.get(paradigm)
+        if pcfg is None:
+            available = sorted(self.paradigm_configs.keys())
+            raise ValueError(
+                f"Paradigm {paradigm} not in dataset config. Available: {available}"
+            )
+        if pcfg.get("type") != "multilabel":
+            raise ValueError(
+                f"Paradigm {paradigm} is not type: multilabel (got {pcfg.get('type', 'binary')!r})"
+            )
+
+        groups = {
+            label_name: self._apply_filter(patient_data, control_data, flt)
+            for label_name, flt in pcfg["labels"].items()
+        }
+
+        print(f"Paradigm {paradigm}: {pcfg.get('name', '')} (multilabel)")
+        for label_name, group in groups.items():
+            print(f"  {label_name}: {len(group)}")
+        return groups
+
+    def get_paradigm_type(self, paradigm: int) -> str:
+        """Return 'binary' (default) or 'multilabel' for a paradigm id."""
+        pcfg = self.paradigm_configs.get(paradigm)
+        if pcfg is None:
+            available = sorted(self.paradigm_configs.keys())
+            raise ValueError(
+                f"Paradigm {paradigm} not in dataset config. Available: {available}"
+            )
+        return pcfg.get("type", "binary")
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _any_needs_metadata(self) -> bool:
         for pcfg in self.paradigm_configs.values():
-            for side in ("g1_filter", "g0_filter"):
-                f = pcfg.get(side, {})
+            sides = list(pcfg.get("labels", {}).values())
+            for side_key in ("g1_filter", "g0_filter"):
+                if side_key in pcfg:
+                    sides.append(pcfg[side_key])
+            for f in sides:
                 if isinstance(f, dict) and f.get("filter") in ("metadata", "metadata_exclude"):
                     return True
         return False
@@ -114,8 +170,11 @@ class ParadigmSelector:
     def _needed_metadata_columns(self) -> list:
         cols = []
         for pcfg in self.paradigm_configs.values():
-            for side in ("g1_filter", "g0_filter"):
-                f = pcfg.get(side, {})
+            sides = list(pcfg.get("labels", {}).values())
+            for side_key in ("g1_filter", "g0_filter"):
+                if side_key in pcfg:
+                    sides.append(pcfg[side_key])
+            for f in sides:
                 if isinstance(f, dict) and "column" in f:
                     cols.append(f["column"])
         return cols

@@ -7,9 +7,11 @@ from sklearn.metrics import (
     recall_score,
     precision_score,
     f1_score,
-    roc_auc_score
+    roc_auc_score,
+    accuracy_score,
+    hamming_loss,
 )
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 
 def compute_metrics(
@@ -61,6 +63,70 @@ def compute_metrics(
         "auc_ci_high": round(ci_high, 3)
     }
 
+
+
+def compute_multilabel_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_proba: np.ndarray,
+    label_names: List[str],
+) -> Dict[str, Any]:
+    """
+    Multi-label counterpart of compute_metrics(). y_true/y_pred/y_proba are
+    (N, len(label_names)) — a subject can be 1 in more than one column.
+
+    Parameters
+    ----------
+    y_true, y_pred : np.ndarray
+        Multi-hot label matrices, shape (N, n_labels)
+    y_proba : np.ndarray
+        Per-label predicted probabilities, shape (N, n_labels)
+    label_names : List[str]
+        Names for each column, in order
+
+    Returns
+    -------
+    Dict[str, Any]
+        Aggregate metrics (subset_accuracy, hamming_loss, macro/micro F1,
+        macro balanced accuracy) plus a "per_label" breakdown.
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.clip(np.asarray(y_pred), 0, 1)
+    y_proba = np.asarray(y_proba)
+
+    n_labels = y_true.shape[1]
+    per_label: Dict[str, Any] = {}
+    label_bas = []
+
+    for i, name in enumerate(label_names[:n_labels]):
+        col_true, col_pred, col_proba = y_true[:, i], y_pred[:, i], y_proba[:, i]
+        if len(np.unique(col_true)) > 1:
+            ba = balanced_accuracy_score(col_true, col_pred)
+            mean_auc, (ci_low, ci_high) = auc_ci_bootstrap(col_true, col_proba)
+        else:
+            # Only one class present for this label in this split — BA/AUC undefined.
+            ba, mean_auc, ci_low, ci_high = (float("nan"),) * 4
+
+        if not np.isnan(ba):
+            label_bas.append(ba)
+
+        per_label[name] = {
+            "ba": None if np.isnan(ba) else round(ba, 3),
+            "auc": None if np.isnan(mean_auc) else round(mean_auc, 3),
+            "auc_ci_low": None if np.isnan(ci_low) else round(ci_low, 3),
+            "auc_ci_high": None if np.isnan(ci_high) else round(ci_high, 3),
+        }
+
+    macro_ba = float(np.mean(label_bas)) if label_bas else float("nan")
+
+    return {
+        "subset_accuracy": round(accuracy_score(y_true, y_pred), 3),
+        "hamming_loss": round(hamming_loss(y_true, y_pred), 3),
+        "macro_f1": round(f1_score(y_true, y_pred, average="macro", zero_division=0), 3),
+        "micro_f1": round(f1_score(y_true, y_pred, average="micro", zero_division=0), 3),
+        "macro_balanced_accuracy": None if np.isnan(macro_ba) else round(macro_ba, 3),
+        "per_label": per_label,
+    }
 
 
 def auc_ci_bootstrap(

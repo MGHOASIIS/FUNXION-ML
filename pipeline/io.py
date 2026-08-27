@@ -5,6 +5,7 @@ import json
 import pickle
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from config.paths import get_pickled_dataset_path, get_event_window_path
@@ -83,9 +84,21 @@ def save_results(results, task: int, paradigm: int, model_name: str,
 
 
 def save_predictions(results, subject_ids, task: int, paradigm: int,
-                     model_name: str, method: str, save_dir: Path) -> pd.DataFrame:
-    """Save per-sample predictions to CSV."""
+                     model_name: str, method: str, save_dir: Path,
+                     label_names=None) -> pd.DataFrame:
+    """Save per-sample predictions to CSV.
+
+    label_names : list of str, optional
+        Required for multi-label results (detected via results.y_true.ndim
+        == 2) — used to name the per-label columns in the wide-format CSV.
+    """
     sids = results.subject_ids if results.subject_ids is not None else subject_ids
+    multilabel = np.asarray(results.y_true).ndim == 2
+
+    if multilabel:
+        return _save_predictions_multilabel(
+            results, sids, task, paradigm, model_name, method, save_dir, label_names
+        )
 
     # Guard against the IDs and predictions coming from differently-ordered
     # arrays (e.g. one built patients-first, the other controls-first) — this
@@ -133,4 +146,51 @@ def save_predictions(results, subject_ids, task: int, paradigm: int,
     n_fn = (df["error_type"] == "false_negative").sum()
     print(f"\n[Predictions Saved] {filepath}")
     print(f"  Correct: {n_correct}/{len(df)}  |  FP: {n_fp}  |  FN: {n_fn}")
+    return df
+
+
+def _save_predictions_multilabel(results, sids, task: int, paradigm: int,
+                                 model_name: str, method: str, save_dir: Path,
+                                 label_names) -> pd.DataFrame:
+    """
+    Multi-label counterpart of save_predictions(). Writes wide-format
+    y_true_{label}/y_pred_{label}/y_proba_{label} columns instead of single
+    scalar columns, since the binary-only error_type (FP/FN) and g1_/g0_
+    subject-ID sanity check don't apply when a sample can have several
+    independent labels at once.
+    """
+    y_true = np.asarray(results.y_true)
+    y_pred = np.asarray(results.y_pred)
+    y_proba = np.asarray(results.y_proba)
+    n_labels = y_true.shape[1]
+    names = label_names if label_names is not None else [f"label_{i}" for i in range(n_labels)]
+
+    assert len(sids) == len(y_true), (
+        f"subject_ids length {len(sids)} != y_true length {len(y_true)}"
+    )
+
+    rows = []
+    for sid, yt_row, yp_row, ypr_row in zip(sids, y_true, y_pred, y_proba):
+        exact_match = bool(np.array_equal(yt_row, yp_row))
+        n_labels_wrong = int(np.sum(yt_row != yp_row))
+        row = {
+            "subject_id": str(sid),
+            "subject": str(sid),
+            "exact_match": exact_match,
+            "n_labels_wrong": n_labels_wrong,
+        }
+        for li, name in enumerate(names):
+            row[f"y_true_{name}"] = int(yt_row[li])
+            row[f"y_pred_{name}"] = int(yp_row[li])
+            row[f"y_proba_{name}"] = round(float(ypr_row[li]), 4)
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    filename = f"predictions_T{task}_P{paradigm}_{model_name}_{method}.csv"
+    filepath = save_dir / filename
+    df.to_csv(filepath, index=False)
+
+    n_exact = df["exact_match"].sum()
+    print(f"\n[Predictions Saved] {filepath}")
+    print(f"  Exact match (all {n_labels} labels correct): {n_exact}/{len(df)}")
     return df

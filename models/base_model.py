@@ -4,7 +4,7 @@ Base model interface for all classification models.
 This provides a unified API for training, evaluation, and feature importance.
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Tuple, Any, Optional
+from typing import Dict, List, Tuple, Any, Optional
 import numpy as np
 from dataclasses import dataclass
 
@@ -27,7 +27,8 @@ class BaseModel(ABC):
     """Abstract base class for all classification models."""
     
     def __init__(self, model_name: str, checkpoints_dir=None, patience=None, min_delta=None,
-                 task=None, paradigm=None, channel_names=None):
+                 task=None, paradigm=None, channel_names=None,
+                 multilabel: bool = False, label_names: Optional[List[str]] = None):
         """
         Parameters
         ----------
@@ -38,6 +39,13 @@ class BaseModel(ABC):
             Used for feature-importance labelling. If not provided, generic
             "ch_{i}" labels are used (resolved lazily once the channel count
             is known from the data — see resolve_channel_names()).
+        multilabel : bool
+            If True, this model is trained on a multi-label paradigm (N
+            independent yes/no labels per sample) rather than the default
+            binary paradigm.
+        label_names : list of str, optional
+            Names of the labels, in column order matching y's shape
+            (N, len(label_names)). Required when multilabel=True.
         """
         self.model_name = model_name
         self.best_params = None
@@ -49,6 +57,9 @@ class BaseModel(ABC):
         self.paradigm = paradigm
         self.channel_names = channel_names
         self.n_channels = len(channel_names) if channel_names is not None else None
+        self.multilabel = multilabel
+        self.label_names = label_names
+        self.n_labels = len(label_names) if label_names is not None else None
 
     def resolve_channel_names(self, n_channels: int) -> list:
         """
@@ -180,9 +191,67 @@ class BaseModel(ABC):
         print(f"\n{self.model_name} Training Complete")
         print(f"Best Balanced Accuracy: {results.metrics['ba']:.3f}")
         print(f"{'='*60}\n")
-        
+
         return results
-    
+
+    def fit_multilabel(
+        self,
+        groups: Dict[str, Dict],
+        label_names: List[str],
+        preprocessor: 'BasePreprocessor',
+        paradigm: int,
+        param_grid: Optional[Dict] = None
+    ) -> ModelResults:
+        """
+        Multi-label counterpart of fit() — same flow, but groups is a dict
+        of N named label-groups (see ParadigmSelector.select_labels()) and
+        preprocessing produces an (N_samples, len(label_names)) y matrix
+        instead of a binary 0/1 vector.
+
+        Parameters
+        ----------
+        groups : Dict[str, Dict]
+            One subject-data dict per label name.
+        label_names : List[str]
+            Ordered label names, matching y's column order.
+        preprocessor : BasePreprocessor
+            Preprocessor instance.
+        paradigm : int
+            Classification paradigm.
+        param_grid : Dict, optional
+            Hyperparameter grid.
+
+        Returns
+        -------
+        ModelResults
+            Complete training results.
+        """
+        print(f"\n{'='*60}")
+        print(f"Training {self.model_name} - Paradigm {paradigm} (multilabel)")
+        print(f"{'='*60}")
+
+        X, y, subject_ids = preprocessor.prepare_data_multilabel(groups, label_names)
+
+        results = self.train_and_evaluate(
+            X=X,
+            y=y,
+            subject_ids=subject_ids,
+            param_grid=param_grid,
+        )
+
+        self.best_params = results.best_params
+        self.feature_importance = results.feature_importance
+        self.per_fold_results = results.metrics.get('per_fold_results', None)
+
+        print(f"\n{self.model_name} Training Complete")
+        if "subset_accuracy" in results.metrics:
+            print(f"Subset Accuracy: {results.metrics['subset_accuracy']:.3f}")
+        if "macro_f1" in results.metrics:
+            print(f"Macro F1:        {results.metrics['macro_f1']:.3f}")
+        print(f"{'='*60}\n")
+
+        return results
+
     def get_summary(self) -> Dict[str, Any]:
         """Get summary of model configuration and performance."""
         return {
@@ -196,28 +265,39 @@ class PyTorchModelMixin:
     """Mixin for PyTorch-based models with common utilities."""
     
     @staticmethod
-    def train_epoch(model, loader, optimizer, criterion, device):
-        """Train one epoch."""
+    def train_epoch(model, loader, optimizer, criterion, device, multilabel: bool = False):
+        """Train one epoch.
+
+        multilabel=False (default): yb is a scalar class index per sample,
+        accuracy is standard argmax accuracy.
+        multilabel=True: yb is a multi-hot (batch, n_labels) float tensor,
+        accuracy is subset accuracy (all labels correct for a sample).
+        """
         model.train()
         total_loss = 0.0
         correct = 0
         total = 0
-        
+
         for xb, yb in loader:
             xb = xb.to(device, non_blocking=True)
             yb = yb.to(device, non_blocking=True)
-            
+
             optimizer.zero_grad()
             logits = model(xb)
             loss = criterion(logits, yb)
             loss.backward()
             optimizer.step()
-            
+
             total_loss += loss.item() * yb.size(0)
-            preds = logits.argmax(dim=1)
-            correct += (preds == yb).sum().item()
+            if multilabel:
+                import torch
+                preds = (torch.sigmoid(logits) >= 0.5).float()
+                correct += (preds == yb).all(dim=1).sum().item()
+            else:
+                preds = logits.argmax(dim=1)
+                correct += (preds == yb).sum().item()
             total += yb.size(0)
-        
+
         return total_loss / total, correct / total
     
     # @staticmethod

@@ -28,24 +28,29 @@ from pipeline.io import (
 
 def create_model(model_type: str, checkpoints_dir=None,
                  patience=None, min_delta=None, task=None, paradigm=None,
-                 channel_names=None):
+                 channel_names=None, multilabel=False, label_names=None):
     model_type = model_type.lower()
     if model_type == "hmm":
         return HMMModel(checkpoints_dir=checkpoints_dir, task=task, paradigm=paradigm,
-                        channel_names=channel_names)
+                        channel_names=channel_names, multilabel=multilabel,
+                        label_names=label_names)
     if model_type == "hsmm":
         return HSMMModel(checkpoints_dir=checkpoints_dir, task=task, paradigm=paradigm,
-                         channel_names=channel_names)
+                         channel_names=channel_names, multilabel=multilabel,
+                         label_names=label_names)
     if model_type == "cnn":
         return CNNModel(checkpoints_dir, patience=patience, min_delta=min_delta,
-                        task=task, paradigm=paradigm, channel_names=channel_names)
+                        task=task, paradigm=paradigm, channel_names=channel_names,
+                        multilabel=multilabel, label_names=label_names)
     if model_type == "rnn":
         return RNNModel(checkpoints_dir, patience=patience, min_delta=min_delta,
-                        task=task, paradigm=paradigm, channel_names=channel_names)
+                        task=task, paradigm=paradigm, channel_names=channel_names,
+                        multilabel=multilabel, label_names=label_names)
     if model_type == "transformer":
         return TransformerModel(checkpoints_dir=checkpoints_dir, patience=patience,
                                 min_delta=min_delta, task=task, paradigm=paradigm,
-                                channel_names=channel_names)
+                                channel_names=channel_names, multilabel=multilabel,
+                                label_names=label_names)
     raise ValueError(f"Unknown model type: {model_type!r}")
 
 
@@ -126,7 +131,15 @@ def run_experiment(args, dataset_config: dict):
         patient_data, control_data = load_data(args.task, args.dataset, dataset_config)
 
     selector = ParadigmSelector(dataset_config)
-    g1, g0 = selector.select_paradigm(patient_data, control_data, paradigm=args.paradigm)
+    is_multilabel = selector.get_paradigm_type(args.paradigm) == "multilabel"
+
+    label_names = None
+    g1 = g0 = groups = None
+    if is_multilabel:
+        label_names = list(paradigm_cfgs[args.paradigm]["labels"].keys())
+        groups = selector.select_labels(patient_data, control_data, paradigm=args.paradigm)
+    else:
+        g1, g0 = selector.select_paradigm(patient_data, control_data, paradigm=args.paradigm)
 
     # ── Preprocess ────────────────────────────────────────────────────────────
     preproc_kwargs = {}
@@ -159,7 +172,10 @@ def run_experiment(args, dataset_config: dict):
             n_augmentations=args.n_augmentations,
         )
 
-    X, y, subject_ids = preprocessor.prepare_data(g1, g0)
+    if is_multilabel:
+        X, y, subject_ids = preprocessor.prepare_data_multilabel(groups, label_names)
+    else:
+        X, y, subject_ids = preprocessor.prepare_data(g1, g0)
 
     # ── Train ─────────────────────────────────────────────────────────────────
     model = create_model(
@@ -170,33 +186,69 @@ def run_experiment(args, dataset_config: dict):
         task=args.task,
         paradigm=args.paradigm,
         channel_names=channel_names,
+        multilabel=is_multilabel,
+        label_names=label_names,
     )
-    results = model.fit(g1=g1, g0=g0, preprocessor=preprocessor, paradigm=args.paradigm)
+    if is_multilabel:
+        results = model.fit_multilabel(
+            groups=groups, label_names=label_names,
+            preprocessor=preprocessor, paradigm=args.paradigm,
+        )
+    else:
+        results = model.fit(g1=g1, g0=g0, preprocessor=preprocessor, paradigm=args.paradigm)
 
     # ── Evaluate ──────────────────────────────────────────────────────────────
     evaluator = ModelEvaluator()
-    eval_results = evaluator.evaluate(
-        y_true=results.y_true, y_pred=results.y_pred,
-        y_proba=results.y_proba, subject_ids=subject_ids,
-    )
-    evaluator.print_report(eval_results)
-
     viz = Visualizer()
     tag = f"Task-{args.task} P{args.paradigm} {args.model.upper()}"
-    viz.plot_confusion_matrix(
-        cm=eval_results.confusion_matrix, class_names=["Group0", "Group1"],
-        normalize=True, title=f"{tag} - Confusion Matrix",
-        save_path=figures_dir / "confusion_matrix.png",
-    )
-    viz.plot_roc_curve(
-        y_true=results.y_true, y_proba=results.y_proba,
-        title=f"{tag} - ROC Curve", save_path=figures_dir / "roc_curve.png",
-    )
-    viz.plot_probability_distribution(
-        y_true=results.y_true, y_proba=results.y_proba,
-        title=f"{tag} - Probability Distribution",
-        save_path=figures_dir / "probability_distribution.png",
-    )
+
+    if is_multilabel:
+        eval_results = evaluator.evaluate_multilabel(
+            y_true=results.y_true, y_pred=results.y_pred,
+            y_proba=results.y_proba, label_names=label_names,
+            subject_ids=subject_ids,
+        )
+        evaluator.print_report_multilabel(eval_results)
+
+        viz.plot_multilabel_confusion_matrices(
+            confusion_matrices=eval_results.confusion_matrices,
+            title=f"{tag} - Confusion Matrices",
+            save_path=figures_dir / "confusion_matrices.png",
+        )
+        # Per-label ROC/probability plots reuse the existing binary plot
+        # functions, once per label column — no new plotting code needed.
+        for li, name in enumerate(label_names):
+            viz.plot_roc_curve(
+                y_true=results.y_true[:, li], y_proba=results.y_proba[:, li],
+                title=f"{tag} - ROC Curve ({name})",
+                save_path=figures_dir / f"roc_curve_{name}.png",
+            )
+            viz.plot_probability_distribution(
+                y_true=results.y_true[:, li], y_proba=results.y_proba[:, li],
+                title=f"{tag} - Probability Distribution ({name})",
+                save_path=figures_dir / f"probability_distribution_{name}.png",
+            )
+    else:
+        eval_results = evaluator.evaluate(
+            y_true=results.y_true, y_pred=results.y_pred,
+            y_proba=results.y_proba, subject_ids=subject_ids,
+        )
+        evaluator.print_report(eval_results)
+
+        viz.plot_confusion_matrix(
+            cm=eval_results.confusion_matrix, class_names=["Group0", "Group1"],
+            normalize=True, title=f"{tag} - Confusion Matrix",
+            save_path=figures_dir / "confusion_matrix.png",
+        )
+        viz.plot_roc_curve(
+            y_true=results.y_true, y_proba=results.y_proba,
+            title=f"{tag} - ROC Curve", save_path=figures_dir / "roc_curve.png",
+        )
+        viz.plot_probability_distribution(
+            y_true=results.y_true, y_proba=results.y_proba,
+            title=f"{tag} - Probability Distribution",
+            save_path=figures_dir / "probability_distribution.png",
+        )
 
     # ── Save results ──────────────────────────────────────────────────────────
     results_dict = save_results(
@@ -206,11 +258,15 @@ def run_experiment(args, dataset_config: dict):
     save_predictions(
         results, subject_ids, args.task, args.paradigm,
         args.model.upper(), args.method, results_dir,
+        label_names=label_names,
     )
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
     diagnostic_results = None
-    if args.diagnostics:
+    if args.diagnostics and is_multilabel:
+        print("\n[Diagnostics] Multi-label diagnostics not yet supported — "
+              "skipping --diagnostics for this run.")
+    elif args.diagnostics:
         diagnostic_results = _run_diagnostics(
             args, model, X, y, subject_ids, results,
             channel_names, experiment_name, diagnostics_dir,
@@ -224,12 +280,20 @@ def run_experiment(args, dataset_config: dict):
         "config": {"task": args.task, "paradigm": args.paradigm,
                    "model": args.model, "method": args.method},
         "results": results_dict,
-        "evaluation": {
-            "accuracy":          getattr(eval_results, "accuracy", None),
-            "balanced_accuracy": getattr(eval_results, "balanced_accuracy", None),
-            "auc_roc":           getattr(eval_results, "auc_roc", None),
-            "auc_roc_ci":        getattr(eval_results, "auc_roc_ci", None),
-        },
+        "evaluation": (
+            {
+                "subset_accuracy":         eval_results.subset_accuracy,
+                "hamming_loss":            eval_results.hamming_loss,
+                "macro_f1":                eval_results.macro_f1,
+                "micro_f1":                eval_results.micro_f1,
+                "macro_balanced_accuracy": eval_results.macro_balanced_accuracy,
+            } if is_multilabel else {
+                "accuracy":          eval_results.accuracy,
+                "balanced_accuracy": eval_results.balanced_accuracy,
+                "auc_roc":           eval_results.auc_roc,
+                "auc_roc_ci":        eval_results.auc_roc_ci,
+            }
+        ),
     }
     if diagnostic_results:
         summary["diagnostics"] = {
@@ -251,9 +315,14 @@ def run_experiment(args, dataset_config: dict):
     print("\n" + "=" * 70)
     print("EXPERIMENT COMPLETE")
     print("=" * 70)
-    print(f"Balanced Accuracy: {results.metrics['ba']:.3f}")
-    print(f"AUC:               {results.metrics['auc']:.3f}")
-    print(f"Recall:            {results.metrics['recall']:.3f}")
+    if is_multilabel:
+        print(f"Subset Accuracy: {results.metrics['subset_accuracy']:.3f}")
+        print(f"Macro F1:        {results.metrics['macro_f1']:.3f}")
+        print(f"Hamming Loss:    {results.metrics['hamming_loss']:.3f}")
+    else:
+        print(f"Balanced Accuracy: {results.metrics['ba']:.3f}")
+        print(f"AUC:               {results.metrics['auc']:.3f}")
+        print(f"Recall:            {results.metrics['recall']:.3f}")
     print(f"\nOutputs: {experiment_dir}")
     print("=" * 70 + "\n")
 
