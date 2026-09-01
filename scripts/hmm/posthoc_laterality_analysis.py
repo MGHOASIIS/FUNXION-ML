@@ -1281,7 +1281,12 @@ def main():
     from dataio.ingestion import load_dataset_config
 
     hmm_dir = Path(args.hmm_dir) if args.hmm_dir else get_experiments_dir(args.dataset)
-    out_dir = Path(args.out) if args.out else get_results_dir(args.dataset) / "hmm" / "laterality"
+    if args.out:
+        out_dir = Path(args.out)
+    else:
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = get_results_dir(args.dataset) / "hmm" / f"laterality_{timestamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     channel_names = load_dataset_config(args.dataset)["channels"]

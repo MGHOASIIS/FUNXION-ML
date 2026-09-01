@@ -507,7 +507,16 @@ def main():
     dataset_config = load_dataset_config(args.dataset)
 
     hmm_dir  = Path(args.hmm_dir) if args.hmm_dir else get_experiments_dir(args.dataset)
-    out_root = Path(args.out_dir) if args.out_dir else get_results_dir(args.dataset) / args.model / "state_seqs"
+    if args.out_dir:
+        out_root = Path(args.out_dir)
+    elif args.skip_existing:
+        # Resuming an in-progress run: reuse the stable (untimestamped) path
+        # so "already done" outputs from the earlier invocation are found.
+        out_root = get_results_dir(args.dataset) / args.model / "state_seqs"
+    else:
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_root = get_results_dir(args.dataset) / args.model / f"state_seqs_{timestamp}"
     csv_dir  = Path(args.csv_dir) if args.csv_dir else None
 
     out_root.mkdir(parents=True, exist_ok=True)

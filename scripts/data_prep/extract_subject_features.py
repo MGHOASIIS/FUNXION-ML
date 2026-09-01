@@ -892,7 +892,12 @@ if __name__ == "__main__":
 
     data_dir  = Path(args.data_dir) if args.data_dir else get_pickled_dir(args.dataset)
     px_path   = Path(args.px_details) if args.px_details else get_raw_dir(args.dataset) / f"{args.dataset}_px_details.xlsx"
-    out_dir   = Path(args.out_dir) if args.out_dir else get_results_dir(args.dataset) / "hmm" / "subject_features"
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    else:
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = get_results_dir(args.dataset) / "hmm" / f"subject_features_{timestamp}"
 
     run_extraction(
         data_dir        = data_dir,

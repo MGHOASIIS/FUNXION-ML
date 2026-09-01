@@ -215,8 +215,9 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         if isinstance(self.checkpoint_dir, Path):
             save_dir = self.checkpoint_dir
         else:
-            # Fallback: save alongside this source file
-            save_dir = Path(__file__).resolve().parent.parent / "experiments" / f"task{self.task}" / f"paradigm{self.paradigm}"
+            # Fallback: save under storage/, never the repo root
+            from config.paths import STORAGE_DIR
+            save_dir = STORAGE_DIR / "experiments" / f"task{self.task}" / f"paradigm{self.paradigm}"
 
         save_dir.mkdir(parents=True, exist_ok=True)
 

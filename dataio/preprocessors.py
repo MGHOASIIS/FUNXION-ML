@@ -182,6 +182,14 @@ class BasePreprocessor(ABC):
             return tensor.detach().cpu().numpy()
         return np.asarray(tensor)
 
+    def _scale_3d(self, X: np.ndarray) -> np.ndarray:
+        """Z-score normalize a (N, T, C) array, fitting the scaler on all
+        frames flattened across N and T."""
+        N, T, C = X.shape
+        X_2d = X.reshape(N * T, C)
+        X_scaled_2d = self.scaler.fit_transform(X_2d)
+        return X_scaled_2d.reshape(N, T, C)
+
 
 class TruncatePreprocessor(BasePreprocessor):
     """Truncate sequences to minimum length."""
@@ -213,13 +221,10 @@ class TruncatePreprocessor(BasePreprocessor):
         # Truncate from the end (keep last T_min timesteps)
         truncated = [self._to_numpy(t[-T_min:]) for t in signals]
         X = np.stack(truncated, axis=0)  # (N, T_min, 18)
-        
+
         # Apply scaling
-        N, T, C = X.shape
-        X_2d = X.reshape(N * T, C)
-        X_scaled_2d = self.scaler.fit_transform(X_2d)
-        X_scaled = X_scaled_2d.reshape(N, T, C)
-        
+        X_scaled = self._scale_3d(X)
+
         # Format conversion if needed
         if self.output_format == "channels_first":
             X_scaled = X_scaled.transpose(0, 2, 1)  # (N, C, T)
@@ -293,12 +298,9 @@ class SlidingWindowPreprocessor(BasePreprocessor):
         # Stack and scale
         X = np.stack(all_windows, axis=0)  # (N_windows, T, C)
         y = np.array(all_window_labels, dtype=np.int32)
-        
-        N, T, C = X.shape
-        X_2d = X.reshape(N * T, C)
-        X_scaled_2d = self.scaler.fit_transform(X_2d)
-        X_scaled = X_scaled_2d.reshape(N, T, C)
-        
+
+        X_scaled = self._scale_3d(X)
+
         # Format conversion if needed
         if self.output_format == "channels_first":
             X_scaled = X_scaled.transpose(0, 2, 1)
@@ -608,13 +610,10 @@ class PaddingPreprocessor(BasePreprocessor):
             padded_list.append(padded)
         
         X = np.stack(padded_list, axis=0)  # (N, T_max, C)
-        
+
         # Apply scaling
-        N, T, C = X.shape
-        X_2d = X.reshape(N * T, C)
-        X_scaled_2d = self.scaler.fit_transform(X_2d)
-        X_scaled = X_scaled_2d.reshape(N, T, C)
-        
+        X_scaled = self._scale_3d(X)
+
         # Format conversion if needed
         if self.output_format == "channels_first":
             X_scaled = X_scaled.transpose(0, 2, 1)  # (N, C, T)
@@ -775,8 +774,7 @@ class PhaseShiftPreprocessor(BasePreprocessor):
         truncated = [s[-T_min:] for s in shifted]
         X = np.stack(truncated, axis=0)  # (N, T_min, C)
 
-        N, T, C = X.shape
-        X_scaled = self.scaler.fit_transform(X.reshape(N * T, C)).reshape(N, T, C)
+        X_scaled = self._scale_3d(X)
 
         if self.output_format == "channels_first":
             X_scaled = X_scaled.transpose(0, 2, 1)

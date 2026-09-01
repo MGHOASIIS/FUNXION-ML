@@ -912,10 +912,11 @@ def main():
                     help="Root directory containing HMM experiment folders "
                          "(default: storage/results/<dataset>/experiments)")
     ap.add_argument("--state-seq-dir", default=None,
-                    help="Default: storage/results/<dataset>/hmm/state_seqs")
+                    help="Default: latest storage/results/<dataset>/hmm/state_seqs_<timestamp>/ "
+                         "(falls back to the legacy un-timestamped state_seqs/ if no timestamped run exists)")
     ap.add_argument("--px-details",    default="data/xdash_px_details.xlsx")
     ap.add_argument("--out",           default=None,
-                    help="Default: storage/results/<dataset>/hmm/reports")
+                    help="Default: storage/results/<dataset>/hmm/reports_<timestamp> (new folder each run)")
     ap.add_argument("--emission-csv",  default=None,
                     help="CSV with emission importance from save_emission_importance.py")
     args = ap.parse_args()
@@ -929,8 +930,26 @@ def main():
             break
     from config.paths import get_experiments_dir, get_results_dir
     hmm_dir       = Path(args.hmm_dir) if args.hmm_dir else get_experiments_dir(args.dataset)
-    state_seq_dir = Path(args.state_seq_dir) if args.state_seq_dir else get_results_dir(args.dataset) / "hmm" / "state_seqs"
-    out_dir       = Path(args.out) if args.out else get_results_dir(args.dataset) / "hmm" / "reports"
+
+    if args.state_seq_dir:
+        state_seq_dir = Path(args.state_seq_dir)
+    else:
+        hmm_results_dir = get_results_dir(args.dataset) / "hmm"
+        timestamped = sorted(hmm_results_dir.glob("state_seqs_*"))
+        legacy = hmm_results_dir / "state_seqs"
+        if timestamped:
+            state_seq_dir = timestamped[-1]
+        elif legacy.exists():
+            state_seq_dir = legacy
+        else:
+            state_seq_dir = hmm_results_dir / "state_seqs"  # error out downstream with a clear path
+
+    if args.out:
+        out_dir = Path(args.out)
+    else:
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = get_results_dir(args.dataset) / "hmm" / f"reports_{timestamp}"
 
     combos = ([(t,p) for t in range(1,7) for p in range(1,5)]
               if args.all else [(args.task, args.paradigm)])
