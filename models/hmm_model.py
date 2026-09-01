@@ -25,7 +25,10 @@ from joblib import parallel_backend, Parallel, delayed
 from models.base_model import BaseModel, ModelResults
 from models.state_sequence_analysis import StateSequenceAnalysisMixin
 from utils.metrics import compute_metrics, compute_multilabel_metrics
-from utils.training import build_loo_splits, resolve_fold_masks, build_fold_record, print_best
+from utils.training import (
+    build_loo_splits, resolve_fold_masks, build_fold_record, print_best,
+    scale_sequences_global, fold_scale_variable_length,
+)
 
 
 # =============================================================================
@@ -168,10 +171,20 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         # immediately after train_and_evaluate() without any extra call.
         # We use the best params found by LOO CV — not BIC/AIC — so the
         # interpretation reflects the actual best-performing configuration.
+        #
+        # This is an explicit full-dataset, no-CV fit for Phase-2
+        # interpretability (not a performance estimate — see
+        # fit_for_analysis()'s docstring), so there's no held-out subject to
+        # protect here. It gets its own globally-scaled copy of X, fit once
+        # over everyone — distinct from the raw X above, which _loo_score()
+        # scales per fold (training subjects only) for the actual LOSO
+        # evaluation.
+        X_analysis = scale_sequences_global(list(X))
+
         if self.multilabel:
             print(f"\n[HMM] Fitting on full data with best params for analysis (multilabel) ...")
             self.fit_for_analysis_multilabel(
-                X               = X,
+                X               = X_analysis,
                 y               = y,
                 label_names     = self.label_names,
                 n_components    = best_params["n_components"],
@@ -181,7 +194,7 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
         else:
             print(f"\n[HMM] Fitting on full data with best params for analysis ...")
             self.fit_for_analysis(
-                X               = X,
+                X               = X_analysis,
                 y               = y,
                 n_components    = best_params["n_components"],
                 covariance_type = best_params["covariance_type"],
@@ -315,6 +328,11 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
             seqs_test = [sequences[i] for i in test_sample_idx]
             y_test_list = y[test_sample_idx].tolist()
 
+            # Fold-safe z-score normalization: fit on training subjects
+            # only — the held-out subject never contributes to the
+            # statistic used to normalize the training data.
+            seqs_train, seqs_test = fold_scale_variable_length(seqs_train, seqs_test)
+
             # Train class-conditional HMMs
             hmm0 = self._fit_hmm(
                 [s for s, lab in zip(seqs_train, y_train) if lab == 0],
@@ -408,6 +426,11 @@ class HMMModel(StateSequenceAnalysisMixin, BaseModel):
 
             seqs_test = [sequences[i] for i in test_sample_idx]
             y_test_rows = y[test_sample_idx]        # (n_test, n_labels)
+
+            # Fold-safe z-score normalization: fit on training subjects
+            # only — the held-out subject never contributes to the
+            # statistic used to normalize the training data.
+            seqs_train, seqs_test = fold_scale_variable_length(seqs_train, seqs_test)
 
             # Fit one one-vs-rest HMM pair per label
             label_hmms = {}

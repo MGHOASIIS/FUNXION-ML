@@ -163,6 +163,12 @@ def run_experiment(args, dataset_config: dict):
         resample_rate=resample_rate,
         original_rate=preproc_original_rate,
         data_source=args.data_source,
+        # This is the LOSO cross-validation training path: truncation
+        # length and the z-score scaler must be fit per fold (training
+        # subjects only), not once over the full dataset. Only affects
+        # cnn/rnn/transformer with method='truncate'/'downsample_truncate'
+        # — see PreprocessorFactory.create()'s fold_safe docstring.
+        fold_safe=True,
         **preproc_kwargs,
     )
     if args.augment:
@@ -399,8 +405,15 @@ def _run_diagnostics(args, model, X, y, subject_ids, results,
             from pathlib import Path
             csv_path = Path(args.hmm_csv_dir) / f"consolidated_task{args.task}.csv"
             if csv_path.exists():
+                # run_alignment_analysis decodes sequences with self.fitted_hmm0/1,
+                # which were fit on the globally-scaled X_analysis inside
+                # train_and_evaluate() — X here is raw (VariableLengthPreprocessor
+                # no longer scales), so it needs the same global scaling to match
+                # the scale the fitted models actually expect.
+                from utils.training import scale_sequences_global
+                X_aligned = scale_sequences_global(list(X))
                 model.run_alignment_analysis(
-                    sequences=X, subject_ids=seq_sids, csv_path=csv_path,
+                    sequences=X_aligned, subject_ids=seq_sids, csv_path=csv_path,
                     task_id=args.task, paradigm_id=args.paradigm,
                     tolerance_s=0.5, sampling_rate=sampling_rate,
                     save_path=diagnostics_dir / f"alignment_T{args.task}_P{args.paradigm}.csv",

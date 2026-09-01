@@ -25,6 +25,7 @@ from utils.metrics import compute_metrics, compute_multilabel_metrics
 from utils.training import (
     EarlyStopping, build_loo_splits, resolve_fold_masks,
     build_fold_record, print_best,
+    fold_truncate_and_scale, build_inner_validation_split,
 )
 
 
@@ -250,25 +251,29 @@ class RNNModel(BaseModel, PyTorchModelMixin):
         
     def train_and_evaluate(
         self,
-        X: np.ndarray,
+        X: List[np.ndarray],
         y: np.ndarray,
         subject_ids: Optional[np.ndarray] = None,
         param_grid: Optional[Dict] = None,
     ) -> ModelResults:
         """
         Train RNN with hyperparameter search using LOO CV.
-        
+
         Parameters
         ----------
-        X : np.ndarray
-            Feature matrix (N, T, C) - batch-first format
+        X : list of np.ndarray
+            Raw per-subject sequences, each shape (T_i, C) — variable
+            length. Truncation length and z-score normalization are fit
+            per LOSO fold (training subjects only) inside _loo_score(),
+            not once over the whole dataset — see
+            utils.training.fold_truncate_and_scale().
         y : np.ndarray
             Labels
         subject_ids : np.ndarray, optional
             Subject identifiers for proper CV
         param_grid : Dict, optional
             Hyperparameter grid for search
-        
+
         Returns
         -------
         ModelResults
@@ -277,22 +282,21 @@ class RNNModel(BaseModel, PyTorchModelMixin):
         if param_grid is None:
             param_grid = self._get_default_param_grid()
 
-        # Convert to tensors
-        X_tensor = torch.tensor(X, dtype=torch.float32)
         y_tensor = torch.tensor(y, dtype=torch.float32 if self.multilabel else torch.long)
+        n_channels = X[0].shape[1]
 
         # Handle subject-level CV if we have subject IDs
         cv_splits, unique_subjects = build_loo_splits(len(X), subject_ids, "RNN")
-        
+
         grid = list(ParameterGrid(param_grid))
         print(f"[RNN] Evaluating {len(grid)} hyperparameter combinations...")
-        
+
         # Parallel hyperparameter search
         results = []
 
         for params in grid:
             score = self._loo_score(
-                params, X_tensor, y_tensor,
+                params, X, y_tensor,
                 cv_splits, subject_ids, unique_subjects
             )
             results.append(score)
@@ -325,7 +329,7 @@ class RNNModel(BaseModel, PyTorchModelMixin):
                 'hyperparameters': best_params,
                 'metrics': checkpoint_metrics,
                 'feature_importance': feature_imp,
-                'input_shape': list(X.shape),
+                'input_shape': [len(X), n_channels],
                 'predictions': {
                     'y_true': y_true.tolist(),
                     'y_pred': y_pred.tolist(),
@@ -333,9 +337,9 @@ class RNNModel(BaseModel, PyTorchModelMixin):
                 },
                 'timestamp': datetime.now().isoformat()
             }, best_path)
-            
+
             print(f"\n BEST MODEL SAVED: {best_path}")
-        
+
         return ModelResults(
             metrics=metrics,
             best_params=best_params,
@@ -343,7 +347,7 @@ class RNNModel(BaseModel, PyTorchModelMixin):
             y_true=y_true,
             y_pred=y_pred,
             y_proba=y_proba,
-            X_shape=X.shape,
+            X_shape=(len(X), n_channels),
             subject_ids=subject_order if subject_ids is not None else subject_ids,
             per_fold_results=per_fold_results
         )
@@ -351,7 +355,7 @@ class RNNModel(BaseModel, PyTorchModelMixin):
     def _loo_score(
         self,
         cfg: Dict,
-        X: torch.Tensor,
+        X: List[np.ndarray],
         y: torch.Tensor,
         cv_splits: List,
         subject_ids: Optional[np.ndarray],
@@ -359,13 +363,13 @@ class RNNModel(BaseModel, PyTorchModelMixin):
     ):
         """
         Compute LOO CV score with early stopping.
-        
+
         Parameters
         ----------
         cfg : Dict
             Hyperparameter configuration
-        X : torch.Tensor
-            Feature tensor (N, T, C)
+        X : list of np.ndarray
+            Raw per-subject sequences, each shape (T_i, C)
         y : torch.Tensor
             Labels
         cv_splits : List
@@ -374,7 +378,7 @@ class RNNModel(BaseModel, PyTorchModelMixin):
             Subject identifiers
         unique_subjects : np.ndarray or None
             Unique subject IDs for subject-level CV
-        
+
         Returns
         -------
         tuple
@@ -386,21 +390,39 @@ class RNNModel(BaseModel, PyTorchModelMixin):
         subject_order = []
 
         g = torch.Generator().manual_seed(42)
-        
-        input_dim = X.shape[2]  # C dimension
-        
+
+        input_dim = X[0].shape[1]  # C dimension
+
         for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
             # Handle subject-level splits
             train_sample_idx, test_sample_idx, test_subjects = resolve_fold_masks(
                 subject_ids, unique_subjects, train_idx, test_idx, fold_idx
             )
-            
-            # Split data
-            X_train = X[train_sample_idx]
-            y_train = y[train_sample_idx]
-            X_test = X[test_sample_idx]
+
+            # Truncation length and z-score scaler are fit on this fold's
+            # training subjects only — the held-out subject never
+            # contributes to either statistic.
+            train_signals = [X[i] for i in train_sample_idx]
+            test_signals  = [X[i] for i in test_sample_idx]
+            X_train_np, X_test_np = fold_truncate_and_scale(
+                train_signals, test_signals, output_format="3d"
+            )
+            X_train_full = torch.tensor(X_train_np, dtype=torch.float32)
+            X_test = torch.tensor(X_test_np, dtype=torch.float32)
+            y_train_full = y[train_sample_idx]
             y_test_list = y[test_sample_idx].tolist()
-            
+
+            # Inner validation split carved from this fold's training
+            # subjects only (never the outer held-out subject above) —
+            # this is what actually drives early stopping below.
+            inner_train_pos, inner_val_pos = build_inner_validation_split(
+                train_sample_idx, subject_ids, val_fraction=0.15, seed=42 + fold_idx
+            )
+            X_train = X_train_full[inner_train_pos]
+            y_train = y_train_full[inner_train_pos]
+            X_val   = X_train_full[inner_val_pos]
+            y_val   = y_train_full[inner_val_pos]
+
             # Create model
             model = RNNClassifier(
                 input_dim=input_dim,
@@ -413,7 +435,7 @@ class RNNModel(BaseModel, PyTorchModelMixin):
                 pooling=cfg["pooling"],
                 num_classes=self.n_labels if self.multilabel else 2,
             ).to(DEVICE)
-            
+
             # Create data loader
             train_dataset = TensorDataset(X_train, y_train)
             train_loader = DataLoader(
@@ -422,38 +444,47 @@ class RNNModel(BaseModel, PyTorchModelMixin):
                 shuffle=True,
                 generator=g
             )
-            
+
             optimizer = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
             criterion = nn.BCEWithLogitsLoss() if self.multilabel else nn.CrossEntropyLoss()
-            
-            # Early stopping
+
+            # Early stopping — driven by the inner validation slice, not
+            # training loss and not the outer test subject.
             early_stopper = EarlyStopping(patience=self.patience, min_delta=self.min_delta, mode="min")
 
             best_train_acc = 0.0
             best_train_loss = float('inf')
-            
+            X_val_dev = X_val.to(DEVICE)
+            y_val_dev = y_val.to(DEVICE).float() if self.multilabel else y_val.to(DEVICE).long()
+
             # Training loop with early stopping
             for epoch in range(cfg["epochs"]):
                 train_loss, train_acc = self.train_epoch(
                     model, train_loader, optimizer, criterion, DEVICE,
                     multilabel=self.multilabel,
                 )
-                
+
                 if train_loss < best_train_loss:
                     best_train_loss = train_loss
                     best_train_acc = train_acc
 
+                model.eval()
+                with torch.no_grad():
+                    inner_val_loss = criterion(model(X_val_dev), y_val_dev).item()
+                model.train()
+
                 print(f"[RNN] fold {fold_idx+1} | epoch {epoch+1} | "
-                      f"loss: {train_loss:.4f} | acc: {train_acc:.4f}")
-                
+                      f"loss: {train_loss:.4f} | acc: {train_acc:.4f} | "
+                      f"inner_val_loss: {inner_val_loss:.4f}")
+
                 # Check early stopping
-                if early_stopper.step(train_loss, model):
+                if early_stopper.step(inner_val_loss, model):
                     break
-            
+
             print("==============================")
             print("fold_idx: ", fold_idx+1)
             print("==============================")
-            
+
             # Load best weights
             model = early_stopper.load_best(model)
 
@@ -467,7 +498,7 @@ class RNNModel(BaseModel, PyTorchModelMixin):
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'config': cfg,
-                        'metrics': {'train_loss': early_stopper.best_score}
+                        'metrics': {'inner_val_loss': early_stopper.best_score}
                     }, self.checkpoint_dir / f"fold_{fold_idx:03d}.pt")
 
             # Predict on test set
@@ -483,6 +514,8 @@ class RNNModel(BaseModel, PyTorchModelMixin):
                     preds = (probs >= 0.5).astype(int)
                     y_test_tensor = torch.tensor(y_test_list, dtype=torch.long).to(DEVICE)
 
+                # Held-out loss for generalization-gap diagnostics only —
+                # never used to make any training or stopping decision.
                 val_loss = criterion(logits, y_test_tensor).item()
 
             y_true.extend(y_test_list)
@@ -498,13 +531,14 @@ class RNNModel(BaseModel, PyTorchModelMixin):
             per_fold_results.append(build_fold_record(
                 fold_idx, test_subjects, subject_ids,
                 y_test_list, preds, probs, fold_ba,
-                train_loss=float(early_stopper.best_score),
+                train_loss=float(best_train_loss),
                 val_loss=float(val_loss),
+                inner_val_loss=float(early_stopper.best_score),
                 train_acc=float(best_train_acc),
                 epochs_trained=epoch + 1,
                 early_stopped=early_stopper.early_stop,
             ))
-            
+
             # Extract input-to-hidden weights
             w_fwd = model.rnn.weight_ih_l0.detach().cpu().clone()
             if cfg["bidirectional"]:

@@ -56,7 +56,10 @@ from scipy.special import logsumexp
 from models.base_model import BaseModel, ModelResults
 from models.state_sequence_analysis import StateSequenceAnalysisMixin
 from utils.metrics import compute_metrics, compute_multilabel_metrics
-from utils.training import build_loo_splits, resolve_fold_masks, build_fold_record, print_best
+from utils.training import (
+    build_loo_splits, resolve_fold_masks, build_fold_record, print_best,
+    scale_sequences_global, fold_scale_variable_length,
+)
 
 
 # =============================================================================
@@ -496,11 +499,16 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
                     f"got y_true={yt}"
                 )
 
-        # Fit on full data for Phase-2 analysis
+        # Fit on full data for Phase-2 analysis — explicit full-dataset,
+        # no-CV fit (not a performance estimate), so it gets its own
+        # globally-scaled copy of X rather than the raw X used above, which
+        # _loo_score() scales per fold (training subjects only).
+        X_analysis = scale_sequences_global(list(X))
+
         if self.multilabel:
             print(f"\n[HSMM] Fitting on full data with best params for analysis (multilabel) ...")
             self.fit_for_analysis_multilabel(
-                X               = X,
+                X               = X_analysis,
                 y               = y,
                 label_names     = self.label_names,
                 n_components    = best_params["n_components"],
@@ -511,7 +519,7 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
         else:
             print(f"\n[HSMM] Fitting on full data with best params for analysis ...")
             self.fit_for_analysis(
-                X               = X,
+                X               = X_analysis,
                 y               = y,
                 n_components    = best_params["n_components"],
                 covariance_type = best_params["covariance_type"],
@@ -621,6 +629,11 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
             seqs_test   = [sequences[i] for i in test_sample_idx]
             y_test_list = y[test_sample_idx].tolist()
 
+            # Fold-safe z-score normalization: fit on training subjects
+            # only — the held-out subject never contributes to the
+            # statistic used to normalize the training data.
+            seqs_train, seqs_test = fold_scale_variable_length(seqs_train, seqs_test)
+
             hsmm0 = self._fit_hsmm(
                 [s for s, lab in zip(seqs_train, y_train) if lab == 0],
                 **params
@@ -697,6 +710,11 @@ class HSMMModel(StateSequenceAnalysisMixin, BaseModel):
             y_train = y[train_sample_idx]
             seqs_test = [sequences[i] for i in test_sample_idx]
             y_test_rows = y[test_sample_idx]
+
+            # Fold-safe z-score normalization: fit on training subjects
+            # only — the held-out subject never contributes to the
+            # statistic used to normalize the training data.
+            seqs_train, seqs_test = fold_scale_variable_length(seqs_train, seqs_test)
 
             label_hsmms = {}
             for li, label_name in enumerate(label_names):

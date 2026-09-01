@@ -166,8 +166,14 @@ def stage_grid(args):
     print("[grid] subject_id/y_true consistency check passed")
 
     print("[grid] fitting full-data model for downstream analysis ...")
+    # fit_for_analysis is a full-dataset, no-CV descriptive fit — X above is
+    # raw (used correctly as-is by _loo_score, which scales per fold), so
+    # scale it globally here, matching HSMMModel.train_and_evaluate()'s own
+    # fit_for_analysis() call.
+    from utils.training import scale_sequences_global
+    X_analysis = scale_sequences_global(list(X))
     model.fit_for_analysis(
-        X=X, y=y,
+        X=X_analysis, y=y,
         n_components=params["n_components"],
         covariance_type=params["covariance_type"],
         n_iter=params["n_iter"],
@@ -374,8 +380,13 @@ def stage_diagnostics(args):
     model = HSMMModel(task=args.task, paradigm=args.paradigm)
     print("[diagnostics] Fitting full-data model at checkpoint hyperparameters "
           f"({params}) ...")
+    # fit_for_analysis is a full-dataset, no-CV descriptive fit — X above is
+    # raw; scale it globally here, matching HSMMModel.train_and_evaluate()'s
+    # own fit_for_analysis() call.
+    from utils.training import scale_sequences_global
+    X_analysis = scale_sequences_global(list(X))
     model.fit_for_analysis(
-        X=X, y=y,
+        X=X_analysis, y=y,
         n_components=params["n_components"],
         covariance_type=params["covariance_type"],
         n_iter=params["n_iter"],

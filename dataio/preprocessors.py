@@ -316,19 +316,24 @@ class VariableLengthPreprocessor(BasePreprocessor):
     """
     Preprocessor for models that natively handle variable-length sequences.
 
-    Designed specifically for HMMs (and future sequence models) that use
-    the hmmlearn 'lengths' parameter — no truncation, padding, or stacking
-    is applied.  Each subject keeps their full recording.
+    Designed for HMMs/HSMMs (via hmmlearn's 'lengths' parameter) and for
+    CNN/RNN/Transformer's fold-safe truncation path — no truncation,
+    padding, stacking, or scaling is applied here. Each subject keeps
+    their full raw recording; truncation length (where applicable) and the
+    z-score scaler are fit downstream, per LOSO fold, from that fold's
+    training subjects only — see utils.training.fold_truncate_and_scale()
+    for CNN/RNN/Transformer, and models/hmm_model.py /
+    models/hsmm_model.py's _loo_score() for HMM/HSMM. This keeps the held-
+    out subject from ever contributing to either statistic, unlike fitting
+    one scaler over the whole dataset up front.
 
     What it does
     ------------
     1. Extracts raw (T_i, 18) arrays from g1/g0 (drops timestamp col if present)
-    2. Z-score normalises using a single StandardScaler fit on all data
-       concatenated — same approach as TruncatePreprocessor, preserving
-       inter-subject differences in absolute sensor values
-    3. Returns X as a plain Python list of (T_i, 18) arrays — NOT stacked
-       This is what hmmlearn expects: a list where each element can have
-       a different T_i (sequence length)
+    2. Returns X as a plain Python list of (T_i, 18) arrays — NOT stacked,
+       NOT scaled. This is what hmmlearn expects: a list where each element
+       can have a different T_i (sequence length); CNN/RNN/Transformer
+       truncate and scale this per fold instead.
 
     Why this matters for HMM
     ------------------------
@@ -341,7 +346,7 @@ class VariableLengthPreprocessor(BasePreprocessor):
 
     Returns
     -------
-    X  : list of np.ndarray, each shape (T_i, 18)   ← variable length
+    X  : list of np.ndarray, each shape (T_i, 18)   ← variable length, raw
     y  : np.ndarray shape (N,)
     subject_ids : np.ndarray shape (N,)
     """
@@ -353,7 +358,7 @@ class VariableLengthPreprocessor(BasePreprocessor):
         subject_ids: List[str],
     ) -> Tuple[list, np.ndarray, np.ndarray]:
         """
-        Extract variable-length z-scored sequences.
+        Extract raw, variable-length sequences — no truncation, no scaling.
 
         Returns
         -------
@@ -364,22 +369,15 @@ class VariableLengthPreprocessor(BasePreprocessor):
         signals = self._extract_signals(all_tensors)
         signals = [self._to_numpy(s) for s in signals]
 
-        # Lengths before normalisation — for logging
         lengths = [s.shape[0] for s in signals]
         print(f"\n[VariableLengthPreprocessor] {len(signals)} sequences")
         print(f"  Length min={min(lengths)}  max={max(lengths)}  "
               f"mean={int(np.mean(lengths))}  (frames @ 50 Hz)")
         print(f"  No truncation — each subject keeps their full recording")
+        print(f"  Not scaled here — z-score normalization is fit per LOSO "
+              f"fold (training subjects only) downstream")
 
-        # Z-score normalise: fit scaler on all frames concatenated
-        # then transform each sequence independently
-        all_frames = np.vstack(signals)           # (sum(T_i), 18)
-        self.scaler.fit(all_frames)
-        X_scaled = [self.scaler.transform(s) for s in signals]
-
-        print(f"  Z-score normalised (scaler fit on {all_frames.shape[0]} frames)")
-
-        return X_scaled, y, np.array(subject_ids)
+        return signals, y, np.array(subject_ids)
 
 
 class ResamplingWrapper(BasePreprocessor):
@@ -468,6 +466,7 @@ class PreprocessorFactory:
         resample_rate: int = 50,
         original_rate: int = 50,
         data_source: str = "subject",
+        fold_safe: bool = False,
         **kwargs
     ) -> BasePreprocessor:
         """
@@ -489,6 +488,20 @@ class PreprocessorFactory:
             'subject' or 'event_window'. Some incompatibilities only apply to
             whole subject recordings (e.g. padding is safe with short event
             windows but not with full-length subject recordings).
+        fold_safe : bool
+            When True and model_type is cnn/rnn/transformer, 'truncate'/
+            'downsample_truncate' return VariableLengthPreprocessor (raw,
+            unscaled sequences) instead of the globally-fit
+            TruncatePreprocessor, so train_and_evaluate() can fit T_min and
+            the z-score scaler per LOSO fold (training subjects only).
+            Defaults to False so existing callers that fit one final model
+            on the full dataset and evaluate on separate external data
+            (e.g. inference/inference.py, which reaches into
+            preprocessor.scaler and expects a stacked array) are
+            unaffected — there's no held-out same-pool subject to protect
+            in that scenario, so global fitting there is correct as-is.
+            pipeline/runner.py passes True for LOSO cross-validation
+            training.
         **kwargs
             Additional parameters for the chosen preprocessor.
 
@@ -525,15 +538,32 @@ class PreprocessorFactory:
         else:
             output_format = "3d"
 
+        # CNN/RNN/Transformer can opt into VariableLengthPreprocessor for
+        # "truncate" via fold_safe=True: it hands back raw, unscaled,
+        # untruncated sequences, and train_and_evaluate() fits T_min and the
+        # z-score scaler per LOSO fold (training subjects only), not once
+        # over the full dataset. Defaults to the original global-fit
+        # TruncatePreprocessor for every other caller (HMM/HSMM always;
+        # CNN/RNN/Transformer too unless fold_safe=True is passed) — see
+        # the fold_safe docstring above for why that default matters.
+        _fold_safe_model_types = {"cnn", "rnn", "transformer"}
+        use_fold_safe = fold_safe and model_type.lower() in _fold_safe_model_types
+
         if method == "truncate":
-            preprocessor = TruncatePreprocessor(output_format=output_format)
+            if use_fold_safe:
+                preprocessor = VariableLengthPreprocessor()
+            else:
+                preprocessor = TruncatePreprocessor(output_format=output_format)
         elif method == "downsample_truncate":
             # Functionally identical to truncate — the actual downsampling
             # is applied generically below via ResamplingWrapper whenever
             # resample_rate < original_rate. This method name exists so
             # callers can pass an explicit target_rate/original_rate pair
             # independent of the generic --freq resampling flag.
-            preprocessor = TruncatePreprocessor(output_format=output_format)
+            if use_fold_safe:
+                preprocessor = VariableLengthPreprocessor()
+            else:
+                preprocessor = TruncatePreprocessor(output_format=output_format)
         elif method == "sliding_window":
             preprocessor = SlidingWindowPreprocessor(
                 output_format=output_format,

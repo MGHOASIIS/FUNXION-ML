@@ -119,6 +119,14 @@ def load_xy(task: int, paradigm: int, dataset: str, model: str):
         resample_rate=sampling_rate, original_rate=sampling_rate,
     )
     X, y, sids = preprocessor.prepare_data(g1, g0)
+
+    # VariableLengthPreprocessor returns raw, unscaled sequences — this is
+    # a full-dataset descriptive fit (fit_for_analysis, no CV), so scale
+    # globally here, matching what train_and_evaluate() does for its own
+    # fit_for_analysis() call.
+    from utils.training import scale_sequences_global
+    X = scale_sequences_global(list(X))
+
     return X, y, dataset_config
 
 
