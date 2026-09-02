@@ -26,7 +26,8 @@ from utils.metrics import compute_metrics, compute_multilabel_metrics
 from utils.training import (
     EarlyStopping, build_loo_splits, resolve_fold_masks,
     build_fold_record, print_best,
-    fold_truncate_and_scale, build_inner_validation_split,
+    fold_truncate_and_scale, build_inner_kfold_splits,
+    most_common_config,
 )
 
 
@@ -186,14 +187,18 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         param_grid: Optional[Dict] = None
     ) -> ModelResults:
         """
-        Train CNN with hyperparameter search using LOO CV.
+        Train CNN with nested LOO CV: for each outer held-out subject,
+        hyperparameters and the early-stopping epoch are chosen via a
+        5-fold inner CV over that fold's training subjects only, then one
+        model is retrained on all of that fold's training subjects before
+        scoring the held-out subject.
 
         Parameters
         ----------
         X : list of np.ndarray
             Raw per-subject sequences, each shape (T_i, C) — variable
             length. Truncation length and z-score normalization are fit
-            per LOSO fold (training subjects only) inside _loo_score(),
+            per LOSO fold (training subjects only) inside _nested_loo(),
             not once over the whole dataset — see
             utils.training.fold_truncate_and_scale().
         y : np.ndarray
@@ -201,7 +206,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         subject_ids : np.ndarray, optional
             Subject identifiers for subject-level CV splits
         param_grid : Dict, optional
-            Hyperparameter grid for search
+            Hyperparameter grid to select from via inner CV
 
         Returns
         -------
@@ -218,23 +223,22 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         cv_splits, unique_subjects = build_loo_splits(len(X), subject_ids, "CNN")
 
         grid = list(ParameterGrid(param_grid))
-        print(f"[CNN] Evaluating {len(grid)} hyperparameter combinations...")
+        print(f"[CNN] {len(grid)} candidate configs — selected per outer "
+              f"fold via 5-fold inner CV, not by a single global search")
 
-        # Sequential search (mirrors RNN — avoids Parallel/loky issues with CUDA)
-        results = []
-        for params in grid:
-            score = self._loo_score(
-                params, X, y_tensor,
-                cv_splits, subject_ids, unique_subjects
-            )
-            results.append(score)
+        (score, chosen_configs, y_true, y_pred, y_proba, avg_first_layer_weights,
+         per_fold_results, subject_order) = self._nested_loo(
+            grid, X, y_tensor, cv_splits, subject_ids, unique_subjects, n_channels
+        )
 
-        # Select best configuration by balanced accuracy
-        best_result = max(results, key=lambda t: t[0])
-        (best_score, best_params, y_true, y_pred, y_proba, avg_first_layer_weights,
-         per_fold_results, subject_order) = best_result
+        # Outer folds may each have picked a different config via inner CV
+        # — that's expected in nested CV, not a bug. best_params here is
+        # only a representative summary (the most frequently chosen
+        # config); see per_fold_results[i]['hyperparameters'] for the
+        # config actually used to score each fold's held-out subject.
+        best_params = most_common_config(chosen_configs)
 
-        print_best("CNN", best_params, best_score)
+        print_best("CNN", best_params, score)
 
         # Compute feature importance from averaged first-layer weights
         feature_imp = self._compute_channel_importance(avg_first_layer_weights)
@@ -242,15 +246,15 @@ class CNNModel(BaseModel, PyTorchModelMixin):
         # Compute aggregate metrics
         if self.multilabel:
             metrics = compute_multilabel_metrics(y_true, y_pred, y_proba, self.label_names)
-            checkpoint_metrics = {'macro_f1': best_score, **metrics}
+            checkpoint_metrics = {'macro_f1': score, **metrics}
         else:
             metrics = compute_metrics(y_true, y_pred, y_proba)
-            checkpoint_metrics = {'balanced_accuracy': best_score, **metrics}
+            checkpoint_metrics = {'balanced_accuracy': score, **metrics}
 
         # Save best model checkpoint
         if self.checkpoint_dir:
             from datetime import datetime
-            best_path = self.checkpoint_dir / f"best_model_BA{best_score:.4f}.pt"
+            best_path = self.checkpoint_dir / f"best_model_BA{score:.4f}.pt"
 
             torch.save({
                 'model_name': 'CNN',
@@ -280,50 +284,109 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             per_fold_results=per_fold_results
         )
 
-    def _loo_score(
+    def _train_one_model(
         self,
         cfg: Dict,
+        X_train: torch.Tensor,
+        y_train: torch.Tensor,
+        n_channels: int,
+        X_val: Optional[torch.Tensor] = None,
+        y_val: Optional[torch.Tensor] = None,
+        fixed_epochs: Optional[int] = None,
+        seed: int = 42,
+    ):
+        """
+        Train one CNNClassifier instance.
+
+        If X_val/y_val are given: train with early stopping monitored on
+        val loss, return (model, best_epoch, best_val_loss).
+        Otherwise (fixed_epochs given instead): train for exactly that
+        many epochs with no early stopping — used for the final retrain on
+        all of a fold's training subjects, once inner CV has already
+        picked both the config and the epoch count.
+        """
+        g = torch.Generator().manual_seed(seed)
+        model = CNNClassifier(
+            in_channels=n_channels,
+            n_classes=self.n_labels if self.multilabel else 2,
+            conv_channels=cfg["conv_channels"],
+            kernel_sizes=cfg["kernel_sizes"],
+            dropout_fc=cfg["dropout_fc"],
+        ).to(DEVICE)
+
+        train_dataset = TensorDataset(X_train, y_train)
+        train_loader = DataLoader(
+            train_dataset, batch_size=cfg["batch_size"], shuffle=True, generator=g
+        )
+
+        optimizer = torch.optim.Adam(
+            model.parameters(), lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"]
+        )
+        criterion = nn.BCEWithLogitsLoss() if self.multilabel else nn.CrossEntropyLoss()
+
+        if X_val is not None:
+            early_stopper = EarlyStopping(
+                patience=self.patience, min_delta=self.min_delta, mode="min"
+            )
+            X_val_dev = X_val.to(DEVICE)
+            y_val_dev = y_val.to(DEVICE).float() if self.multilabel else y_val.to(DEVICE).long()
+
+            for epoch in range(cfg["epochs"]):
+                self.train_epoch(
+                    model, train_loader, optimizer, criterion, DEVICE,
+                    multilabel=self.multilabel,
+                )
+                model.eval()
+                with torch.no_grad():
+                    val_loss = criterion(model(X_val_dev), y_val_dev).item()
+                model.train()
+                if early_stopper.step(val_loss, model):
+                    break
+
+            model = early_stopper.load_best(model)
+            return model, epoch + 1, float(early_stopper.best_score)
+        else:
+            n_epochs = fixed_epochs if fixed_epochs is not None else cfg["epochs"]
+            last_train_loss = None
+            for _ in range(n_epochs):
+                last_train_loss, _ = self.train_epoch(
+                    model, train_loader, optimizer, criterion, DEVICE,
+                    multilabel=self.multilabel,
+                )
+            return model, n_epochs, last_train_loss
+
+    def _nested_loo(
+        self,
+        grid: List[Dict],
         X: List[np.ndarray],
         y: torch.Tensor,
         cv_splits: List,
         subject_ids: Optional[np.ndarray],
-        unique_subjects: Optional[np.ndarray]
+        unique_subjects: Optional[np.ndarray],
+        n_channels: int,
     ):
         """
-        Run one full LOO CV pass for a given hyperparameter configuration.
-
-        Parameters
-        ----------
-        cfg : Dict
-            Hyperparameter configuration
-        X : list of np.ndarray
-            Raw per-subject sequences, each shape (T_i, C)
-        y : torch.Tensor
-            Labels
-        cv_splits : List
-            Precomputed LOO split indices
-        subject_ids : np.ndarray or None
-            Subject identifiers (for subject-level splits)
-        unique_subjects : np.ndarray or None
-            Unique subject IDs
+        Nested LOO CV: for each outer fold, run a 5-fold inner CV over
+        every candidate config to pick that fold's hyperparameters and
+        stopping epoch, retrain once on the full outer-training set, then
+        score the outer held-out subject.
 
         Returns
         -------
         tuple
-            (balanced_accuracy, config, y_true, y_pred, y_proba,
-             avg_first_layer_weights, per_fold_results)
+            (balanced_accuracy, chosen_configs, y_true, y_pred, y_proba,
+             avg_first_layer_weights, per_fold_results, subject_order)
+            chosen_configs[i] is the hyperparameter config picked for the
+            i-th outer fold (in fold-iteration order).
         """
         y_true, y_pred, y_proba = [], [], []
-        all_first_layer_weights = []   # accumulate across folds, not just last
-        per_fold_results = []          # full per-fold diagnostics
-        subject_order = []             # fold-iteration order — see train_and_evaluate
-
-        g = torch.Generator().manual_seed(42)
-        n_channels = X[0].shape[1]
+        all_first_layer_weights = []
+        per_fold_results = []
+        subject_order = []
+        chosen_configs = []
 
         for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
 
-            # Resolve sample indices from subject-level or sample-level splits
             train_sample_idx, test_sample_idx, test_subjects = resolve_fold_masks(
                 subject_ids, unique_subjects, train_idx, test_idx, fold_idx
             )
@@ -341,101 +404,62 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             y_train_full = y[train_sample_idx]
             y_test_list = y[test_sample_idx].tolist()
 
-            # Inner validation split carved from this fold's training
-            # subjects only (never the outer held-out subject above) —
-            # this is what actually drives early stopping below.
-            inner_train_pos, inner_val_pos = build_inner_validation_split(
-                train_sample_idx, subject_ids, val_fraction=0.15, seed=42 + fold_idx
-            )
-            X_train = X_train_full[inner_train_pos]
-            y_train = y_train_full[inner_train_pos]
-            X_val   = X_train_full[inner_val_pos]
-            y_val   = y_train_full[inner_val_pos]
-
-            # Instantiate model fresh for each fold
-            model = CNNClassifier(
-                in_channels=n_channels,
-                n_classes=self.n_labels if self.multilabel else 2,
-                conv_channels=cfg["conv_channels"],
-                kernel_sizes=cfg["kernel_sizes"],
-                dropout_fc=cfg["dropout_fc"]
-            ).to(DEVICE)
-
-            # Data loader
-            train_dataset = TensorDataset(X_train, y_train)
-            train_loader = DataLoader(
-                train_dataset,
-                batch_size=cfg["batch_size"],
-                shuffle=True,
-                generator=g
+            # 5-fold inner CV over this fold's training subjects only —
+            # used for BOTH hyperparameter selection and early stopping.
+            # The outer held-out subject above is never part of it.
+            inner_splits = build_inner_kfold_splits(
+                train_sample_idx, subject_ids, n_inner_folds=5, seed=42 + fold_idx
             )
 
-            optimizer = torch.optim.Adam(
-                model.parameters(),
-                lr=cfg["learning_rate"],
-                weight_decay=cfg["weight_decay"]
+            config_scores = []
+            for cfg in grid:
+                inner_losses, inner_epochs = [], []
+                for inner_train_pos, inner_val_pos in inner_splits:
+                    _, best_epoch, best_val_loss = self._train_one_model(
+                        cfg,
+                        X_train_full[inner_train_pos], y_train_full[inner_train_pos],
+                        n_channels,
+                        X_val=X_train_full[inner_val_pos], y_val=y_train_full[inner_val_pos],
+                        seed=42 + fold_idx,
+                    )
+                    inner_losses.append(best_val_loss)
+                    inner_epochs.append(best_epoch)
+                config_scores.append((
+                    float(np.mean(inner_losses)),
+                    int(round(np.mean(inner_epochs))),
+                    cfg,
+                ))
+
+            # This fold's winner: lowest mean inner-CV validation loss —
+            # never the outer held-out subject's outcome.
+            best_mean_loss, best_epochs, best_cfg = min(config_scores, key=lambda t: t[0])
+            chosen_configs.append(best_cfg)
+
+            print(f"[CNN] fold {fold_idx+1}/{len(cv_splits)} — chosen config "
+                  f"(mean inner-CV loss {best_mean_loss:.4f}, {best_epochs} epochs): {best_cfg}")
+
+            # Final retrain on ALL of this fold's training subjects, for
+            # the epoch count inner CV already decided — no further early
+            # stopping needed, and no further validation split required.
+            final_model, epochs_trained, final_train_loss = self._train_one_model(
+                best_cfg, X_train_full, y_train_full, n_channels, fixed_epochs=best_epochs
             )
-            criterion = nn.BCEWithLogitsLoss() if self.multilabel else nn.CrossEntropyLoss()
 
-            # Early stopping (mirrors RNN) — driven by the inner validation
-            # slice, not training loss and not the outer test subject.
-            early_stopper = EarlyStopping(
-                patience=self.patience,
-                min_delta=self.min_delta,
-                mode="min"
-            )
-
-            best_train_loss = float('inf')
-            best_train_acc = 0.0
-            X_val_dev = X_val.to(DEVICE)
-            y_val_dev = y_val.to(DEVICE).float() if self.multilabel else y_val.to(DEVICE).long()
-
-            # Training loop with early stopping
-            for epoch in range(cfg["epochs"]):
-                train_loss, train_acc = self.train_epoch(
-                    model, train_loader, optimizer, criterion, DEVICE,
-                    multilabel=self.multilabel,
-                )
-
-                if train_loss < best_train_loss:
-                    best_train_loss = train_loss
-                    best_train_acc = train_acc
-
-                model.eval()
-                with torch.no_grad():
-                    inner_val_loss = criterion(model(X_val_dev), y_val_dev).item()
-                model.train()
-
-                print(f"[CNN] fold {fold_idx+1} | epoch {epoch+1} | "
-                      f"loss: {train_loss:.4f} | acc: {train_acc:.4f} | "
-                      f"inner_val_loss: {inner_val_loss:.4f}")
-
-                if early_stopper.step(inner_val_loss, model):
-                    break
-
-            print(f"{'='*30}")
-            print(f"[CNN] Fold {fold_idx + 1} complete")
-            print(f"{'='*30}")
-
-            # Restore best weights before evaluation
-            model = early_stopper.load_best(model)
-
-            # Checkpoint every 10 folds (mirrors RNN)
             if self.checkpoint_dir:
                 should_save = (fold_idx % 10 == 0) or (fold_idx == len(cv_splits) - 1)
                 if should_save:
                     torch.save({
                         'fold': fold_idx,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'config': cfg,
-                        'metrics': {'inner_val_loss': early_stopper.best_score}
+                        'model_state_dict': final_model.state_dict(),
+                        'config': best_cfg,
+                        'metrics': {'inner_cv_val_loss': best_mean_loss},
                     }, self.checkpoint_dir / f"fold_{fold_idx:03d}.pt")
 
             # Evaluate on held-out subject
-            model.eval()
+            final_model.eval()
+            criterion = nn.BCEWithLogitsLoss() if self.multilabel else nn.CrossEntropyLoss()
             with torch.no_grad():
-                logits = model(X_test.to(DEVICE))
+                logits = final_model(X_test.to(DEVICE))
                 if self.multilabel:
                     probs = torch.sigmoid(logits).cpu().numpy()
                     preds = (probs >= 0.5).astype(int)
@@ -446,7 +470,7 @@ class CNNModel(BaseModel, PyTorchModelMixin):
                     y_test_tensor = torch.tensor(y_test_list, dtype=torch.long).to(DEVICE)
 
                 # Held-out loss for generalization-gap diagnostics only —
-                # never used to make any training or stopping decision.
+                # never used to make any training or selection decision.
                 val_loss = criterion(logits, y_test_tensor).item()
 
             y_true.extend(y_test_list)
@@ -462,61 +486,66 @@ class CNNModel(BaseModel, PyTorchModelMixin):
             per_fold_results.append(build_fold_record(
                 fold_idx, test_subjects, subject_ids,
                 y_test_list, preds, probs, fold_ba,
-                train_loss=float(best_train_loss),
+                train_loss=float(final_train_loss) if final_train_loss is not None else None,
                 val_loss=float(val_loss),
-                inner_val_loss=float(early_stopper.best_score),
-                train_acc=float(best_train_acc),
-                epochs_trained=epoch + 1,
-                early_stopped=early_stopper.early_stop,
+                inner_val_loss=float(best_mean_loss),
+                epochs_trained=epochs_trained,
+                early_stopped=False,
+                hyperparameters=best_cfg,
             ))
 
-            # FIX: accumulate first-layer weights from every fold
-            first_layer_weights = model.feature_extractor[0].weight.detach().cpu().clone()
-            all_first_layer_weights.append(first_layer_weights)
+            # Reduce to a per-channel importance vector *before*
+            # accumulating — different folds can pick different
+            # conv_channels/kernel_sizes via inner CV, so the raw weight
+            # tensors aren't stackable across folds, but the reduced
+            # (in_channels,) vector always is.
+            first_layer_weights = final_model.feature_extractor[0].weight.detach().cpu()
+            fold_importance = first_layer_weights.abs().mean(dim=(0, 2))  # (in_channels,)
+            all_first_layer_weights.append(fold_importance)
 
-            # Clean up
-            del model
+            del final_model
             torch.cuda.empty_cache()
 
-        # Aggregate
         if self.multilabel:
             ba = f1_score(y_true, y_pred, average="macro", zero_division=0)
         else:
             ba = balanced_accuracy_score(y_true, y_pred)
 
-        # FIX: average weights across all folds (not just last fold)
         avg_first_layer_weights = torch.stack(all_first_layer_weights).mean(dim=0)
 
         return (
             ba,
-            cfg,
+            chosen_configs,
             np.array(y_true),
             np.array(y_pred),
             np.array(y_proba),
             avg_first_layer_weights,
             per_fold_results,
-            np.array(subject_order)
+            np.array(subject_order),
         )
 
-    def _compute_channel_importance(self, first_layer_weights: torch.Tensor) -> Dict[str, float]:
+    def _compute_channel_importance(self, importance_vector: torch.Tensor) -> Dict[str, float]:
         """
-        Compute channel importance from averaged first convolutional layer weights.
+        Compute channel importance from the per-fold importance vectors,
+        already reduced and averaged across folds.
 
-        Averaging across folds before computing importance gives a more stable
-        estimate than using a single (potentially atypical) fold.
+        Reduction (abs mean over output channels and kernel dimension) now
+        happens per fold in _nested_loo(), before averaging — necessary
+        because different folds can pick different conv_channels/
+        kernel_sizes via inner CV, so raw weight tensors aren't stackable
+        across folds the way the reduced (in_channels,) vectors are.
 
         Parameters
         ----------
-        first_layer_weights : torch.Tensor
-            Averaged weights from first conv layer (out_channels, in_channels, kernel_size)
+        importance_vector : torch.Tensor
+            Per-channel importance, averaged across folds, shape (in_channels,)
 
         Returns
         -------
         Dict[str, float]
             Channel names mapped to importance scores, sorted descending
         """
-        # Reduce: abs mean over output channels and kernel dimension → (in_channels,)
-        importance = first_layer_weights.abs().mean(dim=(0, 2)).numpy()
+        importance = importance_vector.numpy()
 
         # Normalize (mirrors RNN)
         importance = importance / (importance.sum() + 1e-12)

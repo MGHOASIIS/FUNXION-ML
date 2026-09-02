@@ -9,7 +9,7 @@ from typing import Dict, Optional, List, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.model_selection import LeaveOneOut
+from sklearn.model_selection import LeaveOneOut, KFold
 from sklearn.preprocessing import StandardScaler
 
 
@@ -145,6 +145,7 @@ def build_fold_record(
     epochs_trained: Optional[int] = None,
     early_stopped: bool = False,
     inner_val_loss: Optional[float] = None,
+    hyperparameters: Optional[Dict] = None,
 ) -> Dict:
     """
     Build the per-fold diagnostics dict stored in per_fold_results.
@@ -172,10 +173,15 @@ def build_fold_record(
     epochs_trained : int or None
     early_stopped : bool
     inner_val_loss : float or None
-        Loss on the inner validation slice carved out of this fold's
-        training subjects — this is what actually drives early stopping.
-        Distinct from val_loss (the outer test subject), which the held-out
-        subject never influences.
+        Mean inner-CV validation loss achieved by this fold's chosen
+        hyperparameter config — this is what actually drives both early
+        stopping and hyperparameter selection. Distinct from val_loss (the
+        outer test subject), which the held-out subject never influences.
+    hyperparameters : Dict or None
+        The hyperparameter config chosen for this fold via inner CV. Folds
+        are allowed to pick different configs from each other — this is
+        expected in nested CV, not a bug — so there's no longer a single
+        global "best_params" the way there was with the flat grid search.
 
     Returns
     -------
@@ -194,6 +200,7 @@ def build_fold_record(
         "y_proba":       probs if isinstance(probs, list) else probs.tolist(),
         "epochs_trained": epochs_trained,
         "early_stopped": early_stopped,
+        "hyperparameters": hyperparameters,
     }
 
 
@@ -362,7 +369,90 @@ def build_inner_validation_split(
     return inner_train_pos, inner_val_pos
 
 
+def build_inner_kfold_splits(
+    train_sample_idx: np.ndarray,
+    subject_ids: Optional[np.ndarray],
+    n_inner_folds: int = 5,
+    seed: int = 42,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Split one outer LOSO fold's training samples into ``n_inner_folds``
+    inner-train/inner-validation partitions — used for BOTH hyperparameter
+    selection and early stopping, replacing the single-split version above.
+    The outer held-out subject is never part of ``train_sample_idx`` to
+    begin with, so it can't leak into this either.
+
+    Splits by subject (not by raw sample index) when subject_ids is
+    available, so a subject with multiple samples can't end up on both
+    sides of any one inner fold.
+
+    Parameters
+    ----------
+    train_sample_idx : np.ndarray
+        Global sample indices belonging to this outer fold's training set.
+    subject_ids : np.ndarray or None
+    n_inner_folds : int
+        Number of inner folds. Reduced automatically if there are fewer
+        training subjects than this.
+    seed : int
+        Varies by outer fold (caller should pass e.g. ``42 + fold_idx``).
+
+    Returns
+    -------
+    list of (inner_train_pos, inner_val_pos)
+        One pair per inner fold. Both are *positions* into
+        train_sample_idx (row indices into any array built by indexing
+        with train_sample_idx) — not global sample ids.
+    """
+    if subject_ids is not None:
+        fold_subjects = subject_ids[train_sample_idx]
+        unique_fold_subjects = np.unique(fold_subjects)
+        n_splits = min(n_inner_folds, len(unique_fold_subjects))
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+
+        splits = []
+        for inner_train_subj_pos, inner_val_subj_pos in kf.split(unique_fold_subjects):
+            inner_train_subjects = set(unique_fold_subjects[inner_train_subj_pos].tolist())
+            inner_val_subjects   = set(unique_fold_subjects[inner_val_subj_pos].tolist())
+            inner_train_pos = np.where(np.isin(fold_subjects, list(inner_train_subjects)))[0]
+            inner_val_pos   = np.where(np.isin(fold_subjects, list(inner_val_subjects)))[0]
+            splits.append((inner_train_pos, inner_val_pos))
+        return splits
+    else:
+        n = len(train_sample_idx)
+        n_splits = min(n_inner_folds, n)
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        return list(kf.split(np.arange(n)))
+
+
 def print_best(model_name: str, best_params: Dict, best_score: float) -> None:
     """Print best hyperparameters and balanced accuracy."""
     print(f"\n[{model_name}] Best params: {best_params}")
     print(f"[{model_name}] Best balanced accuracy: {best_score:.4f}")
+
+
+def most_common_config(chosen_configs: List[Dict]) -> Dict:
+    """
+    Return the most frequently chosen config across outer folds.
+
+    With nested CV, each outer fold picks its own hyperparameters via
+    inner CV — they don't have to agree. This is purely a representative
+    summary for logging/checkpointing; the authoritative record is each
+    fold's own choice in per_fold_results[i]['hyperparameters'].
+
+    Parameters
+    ----------
+    chosen_configs : list of Dict
+        One hyperparameter dict per outer fold (fold-iteration order).
+
+    Returns
+    -------
+    Dict
+        The most common config (first-seen on ties).
+    """
+    key = lambda cfg: str(sorted(cfg.items()))
+    counts: Dict[str, int] = {}
+    for cfg in chosen_configs:
+        counts[key(cfg)] = counts.get(key(cfg), 0) + 1
+    best_key = max(counts, key=counts.get)
+    return next(cfg for cfg in chosen_configs if key(cfg) == best_key)
